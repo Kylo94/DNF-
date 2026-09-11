@@ -505,7 +505,7 @@ await sleep(200)
 
 // --- 导出：一个文件两个 sheet ---
 clearDownloads()
-await page.click('[data-testid="btn-export-lineup"]')
+await page.click('[data-testid="btn-export"]')
 const exportFile = await waitForFile(DL, /^DNF打团排表_.*\.xlsx$/, 10000)
 ok('导出统一命名的排表文件', Boolean(exportFile), exportFile || '未找到文件')
 let exportedRosterRows = 0

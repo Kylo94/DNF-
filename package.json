@@ -1,7 +1,7 @@
 {
   "name": "dnf-raid-roster",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "description": "DNF 打团排表工具 - 角色登记（团长用）",
   "scripts": {

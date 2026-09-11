@@ -3,6 +3,8 @@ import { ref } from 'vue'
 import RegistrationView from './views/RegistrationView.vue'
 import LineupView from './views/LineupView.vue'
 import ToastHost from './components/ToastHost.vue'
+import ImportModal from './components/ImportModal.vue'
+import { useDataTransfer } from './composables/useDataTransfer.js'
 import { IS_BETA, VERSION_LABEL } from './version.js'
 
 /** 当前页签：registration（角色登记）/ lineup（编队排表），用 hash 记住，刷新不丢 */
@@ -12,6 +14,24 @@ function switchView(next) {
   view.value = next
   const hash = next === 'lineup' ? '#lineup' : '#registration'
   if (window.location.hash !== hash) window.history.replaceState(null, '', hash)
+}
+
+/* ---- 系统级统一导入 / 导出（角色登记 + 排表同一个文件） ---- */
+const dataTransfer = useDataTransfer()
+const fileInput = ref(null)
+
+function pickFile() {
+  fileInput.value?.click()
+}
+
+async function onFileChange(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (file) await dataTransfer.pickAndParse(file)
+}
+
+function handleExport() {
+  dataTransfer.download()
 }
 </script>
 
@@ -31,28 +51,39 @@ function switchView(next) {
         </p>
       </div>
 
-      <nav class="tabs">
-        <button
-          class="tabs__btn"
-          :class="{ 'tabs__btn--active': view === 'registration' }"
-          data-testid="tab-registration"
-          @click="switchView('registration')"
-        >
-          角色登记
-        </button>
-        <button
-          class="tabs__btn"
-          :class="{ 'tabs__btn--active': view === 'lineup' }"
-          data-testid="tab-lineup"
-          @click="switchView('lineup')"
-        >
-          编队排表
-        </button>
-      </nav>
+      <div class="hero__right">
+        <nav class="tabs">
+          <button
+            class="tabs__btn"
+            :class="{ 'tabs__btn--active': view === 'registration' }"
+            data-testid="tab-registration"
+            @click="switchView('registration')"
+          >
+            角色登记
+          </button>
+          <button
+            class="tabs__btn"
+            :class="{ 'tabs__btn--active': view === 'lineup' }"
+            data-testid="tab-lineup"
+            @click="switchView('lineup')"
+          >
+            编队排表
+          </button>
+        </nav>
+
+        <div class="sys-actions">
+          <span class="sys-actions__label">数据（登记 + 排表同一个文件）</span>
+          <input ref="fileInput" data-testid="input-file" type="file" accept=".xlsx,.xls,.csv" hidden @change="onFileChange" />
+          <button class="btn" data-testid="btn-import" @click="pickFile">导入 Excel</button>
+          <button class="btn btn--primary" data-testid="btn-export" @click="handleExport">导出 Excel</button>
+        </div>
+      </div>
     </header>
 
     <RegistrationView v-if="view === 'registration'" @go-lineup="switchView('lineup')" />
     <LineupView v-else @go-registration="switchView('registration')" />
+
+    <ImportModal />
 
     <footer class="foot">
       <p class="foot__meta">
@@ -118,6 +149,27 @@ function switchView(next) {
   max-width: 660px;
   font-size: 13px;
   line-height: 1.7;
+  color: var(--text-dim);
+}
+
+.hero__right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.sys-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
+}
+
+.sys-actions__label {
+  font-size: 12px;
   color: var(--text-dim);
 }
 

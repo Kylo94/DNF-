@@ -6,8 +6,6 @@ import StatsPanel from '../components/StatsPanel.vue'
 import { DIFFICULTIES, SORT_OPTIONS, CHAR_TYPES } from '../constants.js'
 import { useCharacters } from '../composables/useCharacters.js'
 import { useToast } from '../composables/useToast.js'
-import { useDataTransfer } from '../composables/useDataTransfer.js'
-import ImportModal from '../components/ImportModal.vue'
 
 const {
   characters,
@@ -23,7 +21,6 @@ const {
   clearAll,
 } = useCharacters()
 const { toast } = useToast()
-const dataTransfer = useDataTransfer()
 
 const formRef = ref(null)
 const editing = ref(null)
@@ -31,8 +28,6 @@ const keepContext = ref(true)
 
 const filters = ref({ keyword: '', type: 'all', difficulty: 'all' })
 const sortMode = ref('created')
-
-const fileInput = ref(null)
 
 /* ------------------------- 筛选 / 排序 ------------------------- */
 
@@ -163,50 +158,10 @@ function resetFilters() {
   filters.value = { keyword: '', type: 'all', difficulty: 'all' }
 }
 
-/* ------------------------- 导入 ------------------------- */
-
-function pickFile() {
-  fileInput.value?.click()
-}
-
-async function onFileChange(event) {
-  const file = event.target.files?.[0]
-  event.target.value = ''
-  if (file) await dataTransfer.pickAndParse(file)
-}
-
-/* ------------------------- 导出 ------------------------- */
-
-function handleExport() {
-  dataTransfer.download()
-}
-
-function handleExportFiltered() {
-  dataTransfer.download({ characters: filtered.value })
-  toast(`导出的是当前筛选的 ${filtered.value.length} 条登记（排表 sheet 仍为完整数据）`, 'info', 3600)
-}
 </script>
 
 <template>
   <div class="reg">
-    <header class="card reg-head">
-      <div class="reg-head__text">
-        <h2>角色登记</h2>
-        <p>
-          登记每位玩家的输出C与辅助奶角色，标注普通团 / 困难团，一键保存为 Excel 存档。
-          数据同时保存在本机浏览器中，关闭页面不会丢失。
-        </p>
-      </div>
-      <div class="reg-head__actions">
-        <input ref="fileInput" data-testid="input-file" type="file" accept=".xlsx,.xls,.csv" hidden @change="onFileChange" />
-        <button class="btn btn--ghost" @click="pickFile">导入 Excel</button>
-        <button class="btn btn--primary" data-testid="btn-export" @click="handleExport">保存到 Excel（下载）</button>
-        <button class="btn btn--danger-ghost" data-testid="btn-clear-roster" :disabled="!characters.length" @click="handleClear">
-          清空
-        </button>
-      </div>
-    </header>
-
     <main class="layout">
       <CharacterForm
         ref="formRef"
@@ -245,15 +200,14 @@ function handleExportFiltered() {
               <button v-if="hasFilter" class="btn btn--tiny btn--ghost" @click="resetFilters">重置筛选</button>
             </div>
             <div class="toolbar__info">
-              <span class="muted">
-                显示 {{ filtered.length }} / {{ characters.length }} 条
-              </span>
+              <span class="muted">显示 {{ filtered.length }} / {{ characters.length }} 条</span>
               <button
-                v-if="hasFilter"
-                class="btn btn--tiny btn--ghost"
-                @click="handleExportFiltered"
+                class="btn btn--tiny btn--danger-ghost"
+                data-testid="btn-clear-roster"
+                :disabled="!characters.length"
+                @click="handleClear"
               >
-                导出筛选结果
+                清空登记
               </button>
             </div>
           </header>
@@ -270,7 +224,6 @@ function handleExportFiltered() {
       </div>
     </main>
 
-    <ImportModal />
   </div>
 </template>
 
@@ -279,35 +232,6 @@ function handleExportFiltered() {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.reg-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-  flex-wrap: wrap;
-}
-
-.reg-head__text h2 {
-  margin: 0 0 6px;
-  font-size: 19px;
-  letter-spacing: 0.5px;
-}
-
-.reg-head__text p {
-  margin: 0;
-  max-width: 660px;
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--text-dim);
-}
-
-.reg-head__actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
 }
 
 .layout {

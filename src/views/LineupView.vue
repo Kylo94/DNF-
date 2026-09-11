@@ -3,10 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import WaveRow from '../components/lineup/WaveRow.vue'
 import TeamSettings from '../components/lineup/TeamSettings.vue'
 import BenchPanel from '../components/lineup/BenchPanel.vue'
-import ImportModal from '../components/ImportModal.vue'
 import { DIFFICULTIES, MAX_WAVES, RAID_SIZE, TEAM_LAYOUTS, TEAMS, waveName } from '../constants.js'
 import { useLineup } from '../composables/useLineup.js'
-import { useDataTransfer } from '../composables/useDataTransfer.js'
 import { useToast } from '../composables/useToast.js'
 import { DISPLAY_FORMATS, characterText } from '../utils/display.js'
 import { teamSummary } from '../utils/lineup.js'
@@ -38,9 +36,7 @@ const {
   swapHealSlots,
 } = useLineup()
 const { toast } = useToast()
-const dataTransfer = useDataTransfer()
 
-const fileInput = ref(null)
 const dragSource = ref(null)
 const selected = ref(null)
 const showWarnings = ref(false)
@@ -248,21 +244,6 @@ function handleSwapHeals(teamId) {
   if (result.message) toast(result.message, result.ok ? 'success' : 'warn')
 }
 
-/* ------------------------- 导入 / 导出 ------------------------- */
-
-function pickFile() {
-  fileInput.value?.click()
-}
-
-async function onFileChange(event) {
-  const file = event.target.files?.[0]
-  event.target.value = ''
-  if (file) await dataTransfer.pickAndParse(file)
-}
-
-function handleExport() {
-  dataTransfer.download()
-}
 </script>
 
 <template>
@@ -301,16 +282,6 @@ function handleExport() {
         <button class="btn" data-testid="btn-add-wave" :disabled="state.waves.length >= MAX_WAVES" @click="handleAddWave">
           + 添加波次
         </button>
-        <input
-          ref="fileInput"
-          data-testid="input-file-lineup"
-          type="file"
-          accept=".xlsx,.xls,.csv"
-          hidden
-          @change="onFileChange"
-        />
-        <button class="btn" data-testid="btn-import-lineup" @click="pickFile">导入 Excel</button>
-        <button class="btn" data-testid="btn-export-lineup" @click="handleExport">导出 Excel</button>
         <button
           class="btn btn--danger-ghost"
           data-testid="btn-clear-lineup"
@@ -433,8 +404,6 @@ function handleExport() {
       @drop-bench="onDropBench"
       @select="onBenchSelect"
     />
-
-    <ImportModal />
   </div>
 </template>
 
