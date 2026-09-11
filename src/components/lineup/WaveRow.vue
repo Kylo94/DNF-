@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { HEAL_SLOT_LABELS } from '../../constants.js'
+import { SLOT_DEFS } from '../../constants.js'
 import { formatNumber } from '../../utils/lineup.js'
 import { ROLE_COLORS, characterParts } from '../../utils/display.js'
 
@@ -33,6 +33,7 @@ const emit = defineEmits([
   'change-difficulty',
   'reassign',
   'remove-wave',
+  'toggle-layout',
 ])
 
 const healOrderWarning = computed(() => {
@@ -57,7 +58,9 @@ function layoutText(teamId) {
 }
 
 function isAutoPicked(teamId) {
-  return actualLayout(teamId) === '2n2c' && props.notes?.[teamId]
+  if (actualLayout(teamId) !== '2n2c') return false
+  const policy = props.teams.find((t) => t.id === teamId)?.healPolicy
+  return policy === 'auto' || Boolean(props.notes?.[teamId])
 }
 
 function noteOf(teamId) {
@@ -80,27 +83,19 @@ function partStyle(part, character) {
   return {}
 }
 
-/** 紧凑位标：奶 / 常 / 太 / C */
-function slotBadge(slot, index, teamId) {
-  if (slot.role === 'C') return 'C'
-  const list = props.wave.teams[teamId] || []
-  const heals = list.filter((s) => s.role === 'N')
-  if (heals.length >= 2) {
-    const healIndex = list.slice(0, index).filter((s) => s.role === 'N').length
-    return healIndex === 0 ? '常' : '太'
-  }
-  return '奶'
+function slotDefOf(slot) {
+  return SLOT_DEFS.find((d) => d.key === slot.key) || SLOT_DEFS[0]
 }
 
-function slotBadgeTitle(slot, index, teamId) {
-  if (slot.role === 'C') return '输出C（站街伤害）'
-  const list = props.wave.teams[teamId] || []
-  const heals = list.filter((s) => s.role === 'N')
-  if (heals.length >= 2) {
-    const healIndex = list.slice(0, index).filter((s) => s.role === 'N').length
-    return HEAL_SLOT_LABELS[healIndex] || '辅助奶'
-  }
-  return '辅助奶'
+/** 位标：常 / 太 / C1 / C2 / C3 */
+function slotBadge(slot) {
+  const def = slotDefOf(slot)
+  return def.role === 'N' ? def.short : def.short
+}
+
+function slotBadgeTitle(slot) {
+  const def = slotDefOf(slot)
+  return `${def.label}：${def.desc}`
 }
 
 function isSelected(teamId, slotIndex) {
@@ -172,6 +167,14 @@ function teamTotal(teamId) {
         <span class="team-group__count" :class="{ 'is-bad': teamTotal(team.id).empty }">
           {{ teamTotal(team.id).filled || 0 }}/{{ teamTotal(team.id).total || 4 }}
         </span>
+        <button
+          class="team-group__toggle"
+          :data-testid="`toggle-layout-${index}-${team.id}`"
+          :title="actualLayout(team.id) === '2n2c' ? '改回单奶 1奶3C' : '改成双奶 2奶2C'"
+          @click.stop="emit('toggle-layout', index, team.id)"
+        >
+          {{ actualLayout(team.id) === '2n2c' ? '切单奶' : '切双奶' }}
+        </button>
         <span
           class="team-group__sum"
           :class="`is-${teamTotal(team.id).cTargetReady ? (teamTotal(team.id).cUnder ? 'under' : teamTotal(team.id).cOver ? 'over' : 'ok') : 'none'}`"
@@ -205,8 +208,8 @@ function teamTotal(teamId) {
           @drop.prevent="emit('slot-drop', index, team.id, slotIndex)"
           @click="emit('slot-click', index, team.id, slotIndex)"
         >
-          <span class="badge" :class="slot.role === 'N' ? 'badge--n' : 'badge--c'" :title="slotBadgeTitle(slot, slotIndex, team.id)">
-            {{ slotBadge(slot, slotIndex, team.id) }}
+          <span class="badge" :class="slot.role === 'N' ? 'badge--n' : 'badge--c'" :title="slotBadgeTitle(slot)">
+            {{ slotBadge(slot) }}
           </span>
           <span v-if="characterOf(slot)" class="mini-slot__text">
             <span v-for="(part, i) in partsOf(slot)" :key="i" :style="partStyle(part, characterOf(slot))">{{ part.text }}</span>
@@ -334,6 +337,28 @@ function teamTotal(teamId) {
   font-size: 10.5px;
 }
 
+.team-group__toggle {
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-family: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.team-group:hover .team-group__toggle {
+  opacity: 1;
+}
+
+.team-group__toggle:hover {
+  color: var(--accent);
+  border-color: rgba(240, 198, 116, 0.5);
+}
+
 .team-group__layout.is-auto {
   color: var(--accent);
   border-color: rgba(240, 198, 116, 0.5);
@@ -443,8 +468,9 @@ function teamTotal(teamId) {
 
 .badge {
   flex: none;
-  width: 18px;
+  min-width: 20px;
   height: 18px;
+  padding: 0 3px;
   line-height: 18px;
   text-align: center;
   border-radius: 5px;

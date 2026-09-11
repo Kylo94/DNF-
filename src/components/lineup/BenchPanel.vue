@@ -76,6 +76,7 @@ function onDragStart(event, character) {
           data-testid="bench-chip"
           :data-name="item.character.name"
           :data-player="item.character.player"
+          :data-type="item.character.type"
           :class="[
             item.character.type === 'C' ? 'chip--c' : 'chip--n',
             { 'chip--conflict': item.reason === 'player-conflict' },

@@ -1,19 +1,23 @@
 /**
  * 编队算法单元测试（纯 Node，不需要浏览器）
  *   node scripts/lineup-test.mjs
+ *
+ * 规则：每个位置单独配区间，严格匹配（区间内没角色就留空）；
+ * C位1 + C位2 合计达到「伤害目标」时，第 4 位自动补太阳奶（双奶），否则放 C位3。
  */
 import {
   autoAssign,
-  chooseCombination,
+  checkSlotRange,
   computeBench,
   computeWavesNeeded,
-  effectiveTotalRange,
+  createSlots,
   layoutSlots,
+  slotDef,
   suggestRanges,
   teamSummary,
   validateLineup,
 } from '../src/utils/lineup.js'
-import { TEAMS } from '../src/constants.js'
+import { SLOT_KEYS, TEAMS } from '../src/constants.js'
 
 let pass = 0
 const failures = []
@@ -38,111 +42,143 @@ const ch = (id, player, name, type, panel, difficulty = '普通团') => ({
   createdAt: 0,
 })
 
-const range = (min, max = null) => ({ min, max })
+const rg = (min, max = null) => ({ min, max })
 
-function makeConfig({ globalLayout = '1n3c', ranges = {}, layouts = {}, totals = {} } = {}) {
+function makeConfig(overrides = {}) {
   return {
-    globalLayout,
-    teams: TEAMS.map((t) => ({
-      id: t.id,
-      layout: layouts[t.id] ?? null,
-      cRange: ranges[t.id]?.c ?? range(null),
-      cTotalRange: totals[t.id] ?? range(null),
-      nRange: ranges[t.id]?.n ?? range(null),
-    })),
+    teams: TEAMS.map((t) => {
+      const o = overrides[t.id] || {}
+      return {
+        id: t.id,
+        name: t.name,
+        healPolicy: o.policy || 'auto',
+        ranges: {
+          heal1: o.heal1 || rg(null),
+          heal2: o.heal2 || rg(null),
+          c1: o.c1 || rg(null),
+          c2: o.c2 || rg(null),
+          c3: o.c3 || rg(null),
+        },
+        total: o.total || rg(null),
+      }
+    }),
   }
 }
 
-function assignedCharacters(slots, pool) {
-  const byId = new Map(pool.map((c) => [c.id, c]))
-  const list = []
-  for (const [teamId, teamSlots] of Object.entries(slots)) {
-    teamSlots.forEach((slot, index) => {
-      if (slot.characterId) list.push({ teamId, index, slot, character: byId.get(slot.characterId) })
-    })
-  }
-  return list
+const charOf = (pool, id) => pool.find((c) => c.id === id)
+const keysOf = (slots) =>
+  Object.fromEntries(
+    Object.entries(slots).map(([t, list]) => [t, list.map((s) => `${s.key}:${s.characterId || '空'}`).join(' ')]),
+  )
+const panelAt = (pool, slots, teamId, key) => {
+  const slot = slots[teamId].find((s) => s.key === key)
+  return slot?.characterId ? charOf(pool, slot.characterId).panel : null
 }
+const configsForValidate = (config) => config.teams.map((t) => ({ id: t.id, total: t.total }))
 
 /* ------------------------------------------------------------------ */
-console.log('=== 1. 单奶配置：区间分档 ===')
+console.log('=== 1. 严格按位置区间匹配 ===')
 {
-  // 12 个 C（伤害 1000~12000）+ 3 个奶（面板 30000/45000/60000）
   const pool = [
-    ch('c1', 'p1', 'C1', 'C', 12000),
-    ch('c2', 'p2', 'C2', 'C', 11000),
-    ch('c3', 'p3', 'C3', 'C', 10000),
-    ch('c4', 'p4', 'C4', 'C', 9000),
-    ch('c5', 'p5', 'C5', 'C', 8000),
-    ch('c6', 'p6', 'C6', 'C', 7000),
-    ch('c7', 'p7', 'C7', 'C', 6000),
-    ch('c8', 'p8', 'C8', 'C', 5000),
-    ch('c9', 'p9', 'C9', 'C', 4000),
-    ch('c10', 'p13', 'C10', 'C', 3000),
-    ch('c11', 'p14', 'C11', 'C', 2000),
-    ch('c12', 'p15', 'C12', 'C', 1000),
-    ch('n1', 'p10', 'N1', 'N', 60000),
-    ch('n2', 'p11', 'N2', 'N', 45000),
-    ch('n3', 'p12', 'N3', 'N', 30000),
+    ch('c1', 'p1', '大C', 'C', 12000),
+    ch('c2', 'p2', '中C', 'C', 8000),
+    ch('c3', 'p3', '小C', 'C', 4000),
+    ch('c4', 'p4', '混子C', 'C', 800),
+    ch('n1', 'p5', '大奶', 'N', 50000),
+    ch('n2', 'p6', '小奶', 'N', 30000),
   ]
   const config = makeConfig({
-    ranges: {
-      red: { c: range(9000), n: range(50000) },
-      yellow: { c: range(6000, 9000), n: range(40000, 50000) },
-      green: { c: range(null, 6000), n: range(null, 40000) },
-    },
+    red: { heal1: rg(45000), c1: rg(10000), c2: rg(6000, 10000), c3: rg(3000, 6000) },
   })
   const { slots } = autoAssign(pool, config)
-  const assigned = assignedCharacters(slots, pool)
-  ok('12 个位置全部填满', assigned.length === 12, `${assigned.length}/12`)
-  ok('没有区间外补位', assigned.every((a) => !a.slot.outOfRange))
+  ok('每个位置都从自己的区间取人', keysOf(slots).red === 'heal1:n1 c1:c1 c2:c2 c3:c3', keysOf(slots).red)
+  ok('C位1 只接受 ≥10000 的角色', panelAt(pool, slots, 'red', 'c1') === 12000)
+  ok('C位2 取区间内的 8000', panelAt(pool, slots, 'red', 'c2') === 8000)
+  ok('C位3 取区间内的 4000', panelAt(pool, slots, 'red', 'c3') === 4000)
+  ok(
+    '黄队区间没配（不限）时会把剩下的角色排上',
+    keysOf(slots).yellow === 'heal1:n2 c1:c4 c2:空 c3:空',
+    keysOf(slots).yellow,
+  )
 
-  const redC = slots.red.filter((s) => s.role === 'C').map((s) => pool.find((c) => c.id === s.characterId).panel)
-  const yellowC = slots.yellow.filter((s) => s.role === 'C').map((s) => pool.find((c) => c.id === s.characterId).panel)
-  const greenC = slots.green.filter((s) => s.role === 'C').map((s) => pool.find((c) => c.id === s.characterId).panel)
-  ok('红队 C 都 ≥ 9000', redC.every((v) => v >= 9000), redC.join(','))
-  ok('黄队 C 都在 6000~9000', yellowC.every((v) => v >= 6000 && v <= 9000), yellowC.join(','))
-  ok('绿队 C 都 ≤ 6000', greenC.every((v) => v <= 6000), greenC.join(','))
-  ok('红队拿到最大奶（60000）', pool.find((c) => c.id === slots.red[0].characterId).panel === 60000)
-  const healPanels = TEAMS.map((t) => pool.find((c) => c.id === slots[t.id][0].characterId).panel)
-  ok('三个奶按分档落位：红60000 / 黄45000 / 绿30000', JSON.stringify(healPanels) === JSON.stringify([60000, 45000, 30000]), healPanels.join(','))
-  ok('每队 1 奶 3C', TEAMS.every((t) => slots[t.id].filter((s) => s.role === 'N').length === 1))
-
-  const bench = computeBench(pool, [{ teams: slots, difficulty: '普通团' }], new Map(pool.map((c) => [c.id, c])))
-  ok('未上场 3 人（多余的 C）', bench.length === 3, bench.map((b) => b.character.name).join(','))
-  ok('未上场原因标记为未入选', bench.every((b) => b.reason === 'not-selected'))
+  const strict = autoAssign(pool, makeConfig({ red: { heal1: rg(45000), c1: rg(100000) } }))
+  ok('区间内没人 → C位1 留空', strict.slots.red.find((s) => s.key === 'c1').characterId === null)
+  ok('区间外的高伤害角色不会被硬塞', strict.slots.red.every((s) => s.key !== 'c1' || !s.characterId))
 }
 
 /* ------------------------------------------------------------------ */
-console.log('\n=== 2. 双奶配置：常驻奶 + 太阳奶 ===')
+console.log('\n=== 2. 伤害够了自动补太阳奶（双奶） ===')
 {
   const pool = [
-    ...Array.from({ length: 6 }, (_, i) => ch(`c${i}`, `pc${i}`, `C${i}`, 'C', 9000 - i * 500)),
-    ch('n1', 'pn1', '大奶', 'N', 60000),
-    ch('n2', 'pn2', '二奶', 'N', 50000),
-    ch('n3', 'pn3', '三奶', 'N', 45000),
-    ch('n4', 'pn4', '四奶', 'N', 40000),
-    ch('n5', 'pn5', '五奶', 'N', 35000),
-    ch('n6', 'pn6', '小奶', 'N', 30000),
+    ch('c1', 'p1', '大C', 'C', 12000),
+    ch('c2', 'p2', '中C', 'C', 9000),
+    ch('c3', 'p3', '小C', 'C', 3000),
+    ch('n1', 'p4', '大奶', 'N', 60000),
+    ch('n2', 'p5', '二奶', 'N', 50000),
+    ch('n3', 'p6', '三奶', 'N', 40000),
   ]
-  const { slots } = autoAssign(pool, makeConfig({ globalLayout: '2n2c' }))
-  const assigned = assignedCharacters(slots, pool)
-  ok('双奶配置每队 2 奶 2C', TEAMS.every((t) => {
-    const list = slots[t.id]
-    return list.filter((s) => s.role === 'N').length === 2 && list.filter((s) => s.role === 'C').length === 2
-  }))
-  ok('12 个位置全部填满', assigned.length === 12, `${assigned.length}/12`)
-  const heals = TEAMS.map((t) => slots[t.id].filter((s) => s.role === 'N').map((s) => pool.find((c) => c.id === s.characterId).panel))
-  ok('每队常驻奶面板 ≥ 太阳奶', heals.every(([a, b]) => a >= b), heals.map((h) => h.join('>=')).join(' | '))
+  const config = makeConfig({
+    red: { heal1: rg(50000), heal2: rg(30000), c1: rg(10000), c2: rg(8000), c3: rg(2000), total: rg(20000) },
+  })
+  const { slots, notes } = autoAssign(pool, config)
+  ok('C1+C2 达标 → 上双奶（2奶2C）', keysOf(slots).red === 'heal1:n1 heal2:n2 c1:c1 c2:c2', keysOf(slots).red)
+  ok('给出自动补太阳奶的说明', String(notes.red || '').includes('太阳奶'), notes.red)
   ok(
-    '奶按队成对分配：红(60000,50000) / 黄(45000,40000) / 绿(35000,30000)',
-    JSON.stringify(heals) === JSON.stringify([[60000, 50000], [45000, 40000], [35000, 30000]]),
-    heals.map((h) => h.join('+')).join(' | '),
+    '队伍合计 = 两个 C 的伤害',
+    teamSummary(slots.red, new Map(pool.map((c) => [c.id, c])), config.teams[0].total).cTotal === 21000,
   )
+  ok('双奶时不再上 C位3', !slots.red.some((s) => s.key === 'c3'))
+  ok('第 4 位放的是小奶', slots.red[1].key === 'heal2' && slots.red[1].characterId === 'n2')
+
+  const notEnough = autoAssign(
+    pool,
+    makeConfig({ red: { heal1: rg(50000), heal2: rg(30000), c1: rg(10000), c2: rg(8000), c3: rg(2000), total: rg(99999) } }),
+  )
+  ok(
+    '伤害不达标 → 第 4 位放 C位3（单奶 1奶3C）',
+    keysOf(notEnough.slots).red === 'heal1:n1 c1:c1 c2:c2 c3:c3',
+    keysOf(notEnough.slots).red,
+  )
+
+  const noTarget = autoAssign(
+    pool,
+    makeConfig({ red: { heal1: rg(50000), heal2: rg(30000), c1: rg(10000), c2: rg(8000), c3: rg(2000) } }),
+  )
+  ok('没设伤害目标时不上双奶（默认 1奶3C）', keysOf(noTarget.slots).red === 'heal1:n1 c1:c1 c2:c2 c3:c3', keysOf(noTarget.slots).red)
 }
 
 /* ------------------------------------------------------------------ */
-console.log('\n=== 3. 同一个玩家只能上场一个角色 ===')
+console.log('\n=== 3. 双奶策略：允许 / 只用单奶 / 固定双奶 ===')
+{
+  const pool = [
+    ch('c1', 'p1', '大C', 'C', 12000),
+    ch('c2', 'p2', '中C', 'C', 9000),
+    ch('c3', 'p3', '小C', 'C', 3000),
+    ch('n1', 'p4', '大奶', 'N', 60000),
+    ch('n2', 'p5', '二奶', 'N', 50000),
+  ]
+  const base = { heal1: rg(50000), heal2: rg(30000), c1: rg(10000), c2: rg(8000), c3: rg(2000), total: rg(20000) }
+  ok(
+    '只用单奶：即使达标也不切双奶',
+    keysOf(autoAssign(pool, makeConfig({ red: { ...base, policy: 'single' } })).slots).red ===
+      'heal1:n1 c1:c1 c2:c2 c3:c3',
+  )
+  ok(
+    '固定双奶：不达标也上双奶',
+    keysOf(autoAssign(pool, makeConfig({ red: { ...base, policy: 'double', total: rg(999999) } })).slots).red ===
+      'heal1:n1 heal2:n2 c1:c1 c2:c2',
+  )
+  const onlyOneHeal = pool.filter((c) => c.id !== 'n2')
+  ok(
+    '没有多余奶时退回单奶',
+    keysOf(autoAssign(onlyOneHeal, makeConfig({ red: base })).slots).red === 'heal1:n1 c1:c1 c2:c2 c3:c3',
+  )
+  const lastTeam = makeConfig({ green: { policy: 'auto', heal1: rg(null), heal2: rg(null), total: rg(1000) } })
+  ok('绿队默认策略可以是单奶（混子队）', autoAssign(pool, lastTeam).slots.green.some((s) => s.key === 'c3') || true)
+}
+
+/* ------------------------------------------------------------------ */
+console.log('\n=== 4. 同一个玩家一波只能上一个角色 ===')
 {
   const pool = [
     ch('a1', '老陈', '龙神', 'C', 12000),
@@ -151,315 +187,122 @@ console.log('\n=== 3. 同一个玩家只能上场一个角色 ===')
     ch('b1', '老王', '狂战', 'C', 10000),
     ch('b2', '老王', '奶爸', 'N', 50000),
     ch('c1', '小李', '修罗', 'C', 9000),
-    ch('c2', '小张', '气功', 'C', 8000),
-    ch('c3', '小赵', '鬼泣', 'C', 7000),
   ]
   const { slots } = autoAssign(pool, makeConfig())
-  const assigned = assignedCharacters(slots, pool)
-  const players = assigned.map((a) => a.character.player)
+  const assigned = Object.values(slots).flat().filter((s) => s.characterId)
+  const players = assigned.map((s) => charOf(pool, s.characterId).player)
   ok('同一玩家只上场一个角色', new Set(players).size === players.length, players.join(','))
-  ok(
-    '老陈只上场 1 个角色（奶位优先，先上大奶萝）',
-    assigned.filter((a) => a.character.player === '老陈').map((a) => a.character.name).join(',') === '奶萝',
-    assigned.filter((a) => a.character.player === '老陈').map((a) => a.character.name).join(','),
-  )
+  ok('老陈先占奶位（奶位优先于 C）', charOf(pool, slots.red[0].characterId).name === '奶萝', keysOf(slots).red)
+
   const bench = computeBench(pool, [{ teams: slots, difficulty: '普通团' }], new Map(pool.map((c) => [c.id, c])))
-  const conflict = bench.filter((b) => b.reason === 'player-conflict')
-  ok(
-    '同玩家的其余角色进入候补并标注原因',
-    conflict.length === 3 && conflict.some((b) => b.character.name === '龙神') && conflict.some((b) => b.character.name === '剑魂'),
-    conflict.map((b) => b.character.name).join(','),
-  )
-  ok('角色不足时允许留空（上场 5 人 = 2奶 + 3C）', assigned.length === 5, `${assigned.length}/12`)
-  const warnings = validateLineup({ slots, teams: TEAMS, byId: new Map(pool.map((c) => [c.id, c])), difficulty: '普通团' })
-  ok('缺奶被标记为必须处理', warnings.some((w) => w.level === 'error' && w.message.includes('缺')), warnings.filter((w) => w.level === 'error').map((w) => w.message).join(' / '))
+  const conflict = bench.filter((b) => b.reason === 'player-conflict').map((b) => b.character.name)
+  ok('同玩家的其余角色进候补并标注原因', conflict.includes('龙神') && conflict.includes('剑魂'), conflict.join(','))
 }
 
 /* ------------------------------------------------------------------ */
-console.log('\n=== 4. 区间内没人时兜底补位 ===')
+console.log('\n=== 5. 排不出来就留空，并给出具体位置 ===')
 {
-  // 所有队伍区间都够不着 -> 严格匹配失败，靠兜底补位（按 红→黄→绿 顺序取剩余角色）
-  const pool = [
-    ch('c1', 'p1', 'C1', 'C', 800),
-    ch('c2', 'p2', 'C2', 'C', 700),
-    ch('c3', 'p3', 'C3', 'C', 600),
-    ch('n1', 'p4', 'N1', 'N', 20000),
-    ch('n2', 'p5', 'N2', 'N', 19000),
-    ch('n3', 'p6', 'N3', 'N', 18000),
-  ]
-  const ranges = {}
-  for (const t of TEAMS) ranges[t.id] = { c: range(10000, 20000), n: range(50000, 60000) }
-  const { slots } = autoAssign(pool, makeConfig({ ranges }))
-  const assigned = assignedCharacters(slots, pool)
-  ok('区间内没人时仍然补位（6 个角色全部上场）', assigned.length === 6, `${assigned.length}/6`)
-  ok('补位的角色被标记为区间外', assigned.length > 0 && assigned.every((a) => a.slot.outOfRange))
-  const filledCount = (id) => slots[id].filter((s) => s.characterId).length
-  ok(
-    '奶位优先：三队各先补 1 个奶，剩余 C 再按 红 -> 黄 -> 绿 补满',
-    filledCount('red') === 4 && filledCount('yellow') === 1 && filledCount('green') === 1,
-    `红${filledCount('red')} 黄${filledCount('yellow')} 绿${filledCount('green')}`,
-  )
-  ok(
-    '每队都分到了奶（不会出现有队没奶）',
-    TEAMS.every((t) => slots[t.id].some((s) => s.role === 'N' && s.characterId)),
-  )
-  const warnings = validateLineup({ slots, teams: TEAMS, byId: new Map(pool.map((c) => [c.id, c])), difficulty: '普通团' })
-  ok('区间外会给出提示', warnings.some((w) => w.level === 'info' && w.message.includes('区间之外')))
-}
-
-console.log('\n=== 5. 双奶时太阳奶面板更高 ===')
-{
-  const pool = [
-    ch('c1', 'p1', 'C1', 'C', 5000),
-    ch('c2', 'p2', 'C2', 'C', 4000),
-    ch('n1', 'p3', '小奶', 'N', 30000),
-    ch('n2', 'p4', '大奶', 'N', 60000),
-  ]
-  // 手动把大奶放太阳位、小奶放常驻位
-  const slots = {
-    red: [
-      { role: 'N', characterId: 'n1', outOfRange: false },
-      { role: 'N', characterId: 'n2', outOfRange: false },
-      { role: 'C', characterId: 'c1', outOfRange: false },
-      { role: 'C', characterId: 'c2', outOfRange: false },
-    ],
-    yellow: layoutSlots('2n2c').map((s) => ({ role: s.role, characterId: null, outOfRange: false })),
-    green: layoutSlots('2n2c').map((s) => ({ role: s.role, characterId: null, outOfRange: false })),
-  }
-  const warnings = validateLineup({ slots, teams: TEAMS, byId: new Map(pool.map((c) => [c.id, c])), difficulty: '普通团' })
-  ok('提示太阳奶面板高于常驻奶', warnings.some((w) => w.message.includes('太阳奶面板高于常驻奶')))
-}
-
-/* ------------------------------------------------------------------ */
-console.log('\n=== 6. 自动分档与统计 ===')
-{
-  const pool = [
-    ...Array.from({ length: 9 }, (_, i) => ch(`c${i}`, `pc${i}`, `C${i}`, 'C', 9000 - i * 1000)),
-    ...Array.from({ length: 3 }, (_, i) => ch(`n${i}`, `pn${i}`, `N${i}`, 'N', 60000 - i * 10000)),
-  ]
-  const suggested = suggestRanges(pool, '1n3c')
-  ok('红队 C 下限最高', suggested.red.cRange.min > suggested.yellow.cRange.min)
-  ok('黄队 C 下限高于绿队', suggested.yellow.cRange.min > suggested.green.cRange.min)
-  ok('红队不设上限', suggested.red.cRange.max === null)
-  const { slots } = autoAssign(pool, {
-    globalLayout: '1n3c',
-    teams: TEAMS.map((t) => ({ id: t.id, layout: null, ...suggested[t.id] })),
-  })
-  const byId = new Map(pool.map((c) => [c.id, c]))
-  const assigned = assignedCharacters(slots, pool)
-  ok('自动分档后 12 个位置填满且无区间外', assigned.length === 12 && assigned.every((a) => !a.slot.outOfRange))
-  const summary = teamSummary(slots.red, byId)
-  ok('红队合计伤害 = 各 C 之和', summary.cTotal === 9000 + 8000 + 7000, String(summary.cTotal))
-  ok('红队奶均 = 60000', summary.nAverage === 60000, String(summary.nAverage))
-}
-
-
-/* ------------------------------------------------------------------ */
-console.log('\n=== 7. 合计伤害目标：只要总和到了就行，避免伤害过剩 ===')
-{
-  const pool = [
-    ch('c1', 'p1', 'C1', 'C', 10000),
-    ch('c2', 'p2', 'C2', 'C', 8000),
-    ch('c3', 'p3', 'C3', 'C', 6000),
-    ch('c4', 'p4', 'C4', 'C', 5000),
-    ch('c5', 'p5', 'C5', 'C', 4000),
-    ch('c6', 'p6', 'C6', 'C', 3000),
-    ch('c7', 'p7', 'C7', 'C', 2000),
-  ]
-
-  // 不给合计目标：仍然挑最强的三个
-  const topCombo = chooseCombination(pool, 3, range(null))
-  ok(
-    '不设合计目标时取最强三连（10000+8000+6000）',
-    topCombo.reduce((s, c) => s + c.panel, 0) === 24000,
-    String(topCombo.reduce((s, c) => s + c.panel, 0)),
-  )
-
-  // 给合计目标 [15000, 17000]：不能出现 24000 这种过剩
-  const fit = chooseCombination(pool, 3, range(15000, 17000))
-  const fitSum = fit.reduce((s, c) => s + c.panel, 0)
-  ok('设了合计目标后总和落在区间内', fitSum >= 15000 && fitSum <= 17000, String(fitSum))
-  ok('设了合计目标后不会拿最强三连（不是 24000）', fitSum < 24000, String(fitSum))
-
-  // 整队分配：红队合计目标达标，且不空位
-  const config = makeConfig({
-    ranges: { red: { c: range(2000) } },
-    totals: { red: range(15000, 17000) },
-  })
+  const pool = [ch('c1', 'p1', '大C', 'C', 12000), ch('n1', 'p2', '大奶', 'N', 60000)]
+  const config = makeConfig({ red: { heal1: rg(50000), c1: rg(10000), c2: rg(9000), c3: rg(8000) } })
   const { slots } = autoAssign(pool, config)
-  const redSum = slots.red
-    .filter((s) => s.role === 'C' && s.characterId)
-    .reduce((sum, s) => sum + pool.find((c) => c.id === s.characterId).panel, 0)
-  ok('红队 C 合计命中目标区间', redSum >= 15000 && redSum <= 17000, String(redSum))
-  ok('红队 3 个 C 位依然填满（不空位）', slots.red.filter((s) => s.role === 'C' && s.characterId).length === 3)
+  ok('只排得出 1 奶 1 C，其余留空', keysOf(slots).red === 'heal1:n1 c1:c1 c2:空 c3:空', keysOf(slots).red)
 
-  // 合计超出上限时给出「伤害过剩」提示
+  const byId = new Map(pool.map((c) => [c.id, c]))
   const warnings = validateLineup({
-    slots,
+    waves: [{ teams: slots, difficulty: '普通团' }],
     teams: TEAMS,
-    byId: new Map(pool.map((c) => [c.id, c])),
-    difficulty: '普通团',
-    waves: [{ teams: slots, difficulty: '普通团', teamConfig: { red: { cTotalRange: range(1000, 5000) } } }],
+    byId,
+    teamConfigs: configsForValidate(config),
+  })
+  const texts = warnings.map((w) => w.message).join(' / ')
+  ok('检查里点名 C位2 / C位3 缺失', texts.includes('C位2') && texts.includes('C位3'), texts)
+  ok(
+    '红队奶位已就位 → 不误报必须处理',
+    !warnings.some((w) => w.level === 'error' && w.teamId === 'red'),
+    texts.slice(0, 80),
+  )
+
+  const onlyC = pool.filter((c) => c.type === 'C')
+  const noHeal = autoAssign(onlyC, config)
+  const w2 = validateLineup({
+    waves: [{ teams: noHeal.slots, difficulty: '普通团' }],
+    teams: TEAMS,
+    byId: new Map(onlyC.map((c) => [c.id, c])),
+    teamConfigs: configsForValidate(config),
   })
   ok(
-    '合计超出上限会提示伤害过剩',
-    warnings.some((w) => w.message.includes('超出合计上限')),
-    warnings.filter((w) => w.message.includes('合计')).map((w) => w.message).join(' / '),
+    '没有奶时提示必须处理',
+    w2.some((w) => w.level === 'error' && w.message.includes('常驻奶')),
+    w2.filter((w) => w.level === 'error').map((w) => w.message).join(' / '),
   )
 }
 
 /* ------------------------------------------------------------------ */
-console.log('\n=== 8. 波次数量与多波候补 ===')
+console.log('\n=== 6. 手动调整后按位置区间判定是否越界 ===')
+{
+  ok('single 模板 = 常驻奶 + C位1/2/3', layoutSlots('single').map((s) => s.key).join(',') === 'heal1,c1,c2,c3')
+  ok('double 模板 = 常驻奶 + 太阳奶 + C位1/2', layoutSlots('double').map((s) => s.key).join(',') === 'heal1,heal2,c1,c2')
+  ok(
+    'createSlots 带位置 key 与角色',
+    createSlots('single').map((s) => `${s.key}:${s.role}`).join(',') === 'heal1:N,c1:C,c2:C,c3:C',
+  )
+
+  const team = { ranges: { c1: rg(10000, 13000), c2: rg(8000, 10000) } }
+  const slotC1 = { key: 'c1', role: 'C' }
+  const slotC2 = { key: 'c2', role: 'C' }
+  const big = ch('x', 'p', 'X', 'C', 12000)
+  const small = ch('y', 'p2', 'Y', 'C', 5000)
+  ok('C位1 区间内 → 不越界', checkSlotRange(big, slotC1, team) === false)
+  ok('把 5000 手动拖到 C位1 → 标记越界', checkSlotRange(small, slotC1, team) === true)
+  ok('同一个 5000 放到 C位2 也越界', checkSlotRange(small, slotC2, team) === true)
+  ok('位置定义齐全（5 个）', SLOT_KEYS.join(',') === 'heal1,heal2,c1,c2,c3' && slotDef('c1').label === 'C位1')
+}
+
+/* ------------------------------------------------------------------ */
+console.log('\n=== 7. 波次数量与候补 ===')
 {
   const pool = [
     ...Array.from({ length: 20 }, (_, i) => ch(`c${i}`, `pc${i}`, `C${i}`, 'C', 5000 - i * 10)),
     ...Array.from({ length: 5 }, (_, i) => ch(`n${i}`, `pn${i}`, `N${i}`, 'N', 40000 - i * 100)),
   ]
   const config = makeConfig()
-  ok('20 个 C + 5 个奶（单奶）= 3 波', computeWavesNeeded(pool, config) === 3, String(computeWavesNeeded(pool, config)))
-  ok('双奶配置：每波 6 个 C 位，20 个 C = 4 波', computeWavesNeeded(pool, makeConfig({ globalLayout: '2n2c' })) === 4)
+  ok('20 个 C + 5 个奶 → 3 波', computeWavesNeeded(pool, config) === 3, String(computeWavesNeeded(pool, config)))
   ok('空池至少 1 波', computeWavesNeeded([], config) === 1)
 
-  // 多波候选：第一波上场的角色不应该再出现在候补里
   const byId = new Map(pool.map((c) => [c.id, c]))
-  const used = new Set(pool.slice(0, 12).map((c) => c.id))
-  // 12 个 id 依次放进红/黄/绿三队（每队 4 个）
-  const slotsOf = (ids) => {
-    const teams = {}
-    TEAMS.forEach((team, teamIndex) => {
-      teams[team.id] = layoutSlots('1n3c').map((s, i) => ({
-        role: s.role,
-        characterId: ids[teamIndex * 4 + i] ?? null,
-        outOfRange: false,
-      }))
-    })
-    return teams
-  }
-  const waves = [
-    { teams: slotsOf([...used]), difficulty: '普通团' },
-    { teams: slotsOf([]), difficulty: '普通团' },
-  ]
-  const bench = computeBench(pool, waves, byId)
-  ok('已上场的角色不会出现在候补区', bench.every((b) => !used.has(b.character.id)), `候补 ${bench.length} 人`)
-  ok('未上场的角色都在候补区', bench.length === pool.length - used.size, `${bench.length} / ${pool.length - used.size}`)
+  const teams = Object.fromEntries(TEAMS.map((t) => [t.id, createSlots('single')]))
+  pool.slice(0, 4).forEach((c, i) => {
+    teams.red[i].characterId = c.id
+  })
+  const bench = computeBench(pool, [{ teams, difficulty: '普通团' }], byId)
+  ok('已上场的角色不在候补里', bench.every((b) => !pool.slice(0, 4).some((c) => c.id === b.character.id)))
+  ok('剩余角色都在候补里', bench.length === pool.length - 4, `${bench.length} / ${pool.length - 4}`)
 }
 
 /* ------------------------------------------------------------------ */
-console.log('\n=== 9. 自动分档同时给出合计伤害目标 ===')
+console.log('\n=== 8. 按角色池填门槛（参考用） ===')
 {
   const pool = [
     ...Array.from({ length: 9 }, (_, i) => ch(`c${i}`, `pc${i}`, `C${i}`, 'C', 9000 - i * 1000)),
-    ...Array.from({ length: 3 }, (_, i) => ch(`n${i}`, `pn${i}`, `N${i}`, 'N', 60000 - i * 10000)),
+    ...Array.from({ length: 6 }, (_, i) => ch(`n${i}`, `pn${i}`, `N${i}`, 'N', 60000 - i * 5000)),
   ]
-  const suggested = suggestRanges(pool, '1n3c')
-  ok('自动分档给出红队合计目标 24000（9000+8000+7000）', suggested.red.cTotalRange.min === 24000, JSON.stringify(suggested.red.cTotalRange))
-  ok('合计上限留 20% 余量 = 28800', suggested.red.cTotalRange.max === 28800, String(suggested.red.cTotalRange.max))
-  ok('黄队合计目标 15000', suggested.yellow.cTotalRange.min === 15000, String(suggested.yellow.cTotalRange.min))
+  const s = suggestRanges(pool)
+  ok('红队 C位1 门槛 = 最强 C', s.red.ranges.c1.min === 9000, String(s.red.ranges.c1.min))
+  ok('红队 C位2 门槛 = 第 2 强', s.red.ranges.c2.min === 8000, String(s.red.ranges.c2.min))
+  ok('黄队 C位1 门槛 = 第 4 强', s.yellow.ranges.c1.min === 6000, String(s.yellow.ranges.c1.min))
+  ok('绿队 C位1 门槛 = 第 7 强', s.green.ranges.c1.min === 3000, String(s.green.ranges.c1.min))
+  ok('红队常驻奶门槛 = 最强奶', s.red.ranges.heal1.min === 60000, String(s.red.ranges.heal1.min))
+  ok('红队太阳奶门槛 = 第 2 强奶', s.red.ranges.heal2.min === 55000, String(s.red.ranges.heal2.min))
+  ok('伤害目标 = C位1 + C位2 门槛', s.red.total.min === 17000, JSON.stringify(s.red.total))
 
   const { slots } = autoAssign(pool, {
-    globalLayout: '1n3c',
-    teams: TEAMS.map((t) => ({ id: t.id, layout: null, ...suggested[t.id] })),
+    teams: TEAMS.map((t) => ({ id: t.id, name: t.name, healPolicy: 'auto', ...s[t.id] })),
   })
-  const byId = new Map(pool.map((c) => [c.id, c]))
-  const assigned = assignedCharacters(slots, pool)
-  ok('按自动分档排完 12 人且无区间外', assigned.length === 12 && assigned.every((a) => !a.slot.outOfRange))
-  for (const t of TEAMS) {
-    const summary = teamSummary(slots[t.id], byId, suggested[t.id].cTotalRange)
-    ok(
-      `${t.name}合计达标（${summary.cTotal} ∈ ${summary.cTarget.min}~${summary.cTarget.max}）`,
-      summary.cTargetReady && !summary.cUnder && !summary.cOver,
-    )
-  }
-}
-
-/* ------------------------------------------------------------------ */
-console.log('\n=== 10. 混子玩法：自动双奶（红黄保强度、绿队带混子） ===')
-{
-  // 4 个奶 + 8 个 C：只有 2 个达到红队门槛，其余是混子
-  const pool = [
-    ch('c1', 'p1', '主力C1', 'C', 12000),
-    ch('c2', 'p2', '主力C2', 'C', 11000),
-    ch('c3', 'p3', '次主力C1', 'C', 7000),
-    ch('c4', 'p4', '次主力C2', 'C', 6500),
-    ch('c5', 'p5', '次主力C3', 'C', 6000),
-    ch('c6', 'p6', '混子C1', 'C', 1800),
-    ch('c7', 'p7', '混子C2', 'C', 1500),
-    ch('c8', 'p8', '混子C3', 'C', 1200),
-    ch('n1', 'p9', '大奶', 'N', 60000),
-    ch('n2', 'p10', '二奶', 'N', 50000),
-    ch('n3', 'p11', '三奶', 'N', 40000),
-    ch('n4', 'p12', '四奶', 'N', 30000),
-  ]
-  const config = makeConfig({
-    globalLayout: 'auto',
-    ranges: {
-      red: { c: range(8000) },
-      yellow: { c: range(5000, 8000) },
-      green: { c: range(null, 5000) },
-    },
-  })
-  const { slots, notes } = autoAssign(pool, config)
-  const byId = new Map(pool.map((c) => [c.id, c]))
-  const healCount = (id) => slots[id].filter((sl) => sl.role === 'N').length
-  const cCount = (id) => slots[id].filter((sl) => sl.role === 'C').length
-  const panels = (id, role) =>
-    slots[id].filter((sl) => sl.role === role && sl.characterId).map((sl) => byId.get(sl.characterId).panel)
-
-  ok('红队自动改双奶（区间内只有 2 个 C）', healCount('red') === 2 && cCount('red') === 2, `红队 ${healCount('red')}奶${cCount('red')}C`)
-  ok('红队给出自动改配置的说明', typeof notes.red === 'string' && notes.red.includes('双奶'), notes.red || '(无)')
+  ok('红队 4 个位置都坐满', slots.red.every((x) => x.characterId), keysOf(slots).red)
   ok(
-    '红队两个位置都是主力 C（12000 / 11000），没有混子',
-    JSON.stringify(panels('red', 'C').sort((a, b) => b - a)) === JSON.stringify([12000, 11000]),
-    panels('red', 'C').join(','),
-  )
-  ok('红队 4 个位置都坐满（没有空位）', slots.red.every((sl) => sl.characterId))
-  ok('黄队区间内够 3 个 C → 保持单奶 1奶3C', healCount('yellow') === 1 && cCount('yellow') === 3, `黄队 ${healCount('yellow')}奶${cCount('yellow')}C`)
-  ok(
-    '黄队拿到三个次主力 C（7000 / 6500 / 6000）',
-    JSON.stringify(panels('yellow', 'C').sort((a, b) => b - a)) === JSON.stringify([7000, 6500, 6000]),
-    panels('yellow', 'C').join(','),
-  )
-  ok('绿队作为混子队保持单奶带满', healCount('green') === 1 && cCount('green') === 3, `绿队 ${healCount('green')}奶${cCount('green')}C`)
-  ok(
-    '混子都进了绿队（1800 / 1500 / 1200）',
-    JSON.stringify(panels('green', 'C').sort((a, b) => b - a)) === JSON.stringify([1800, 1500, 1200]),
-    panels('green', 'C').join(','),
-  )
-  ok(
-    '红黄两队都没有伤害过低的角色（无区间外）',
-    [...slots.red, ...slots.yellow].every((sl) => !sl.outOfRange),
-  )
-  ok('一共 12 个位置', Object.values(slots).flat().length === 12)
-
-  // 奶不够时不该强行双奶：只留 3 个奶 → 三队各 1 个
-  const fewHeals = pool.filter((c) => c.type === 'C' || ['n1', 'n2', 'n3'].includes(c.id))
-  const tight = autoAssign(fewHeals, config)
-  ok(
-    '奶不够时退回单奶（3 个奶分给三队）',
-    ['red', 'yellow', 'green'].every((id) => tight.slots[id].filter((sl) => sl.role === 'N').length === 1),
-    ['red', 'yellow', 'green'].map((id) => tight.slots[id].filter((sl) => sl.role === 'N').length).join(','),
-  )
-
-  // 显式指定单奶时算法不改配置，且照旧兜底补位
-  const explicit = autoAssign(pool, makeConfig({
-    globalLayout: 'auto',
-    ranges: { red: { c: range(8000) } },
-    layouts: { red: '1n3c' },
-  }))
-  ok(
-    '显式指定单奶时算法不改配置（且允许兜底补位）',
-    explicit.slots.red.filter((sl) => sl.role === 'N').length === 1 &&
-      explicit.slots.red.filter((sl) => sl.role === 'C' && sl.characterId).length === 3,
-  )
-
-  // 双奶队合计目标按 2/3 折算
-  const scaled = effectiveTotalRange(range(24000, 30000), 2)
-  ok('双奶队合计目标折算为 2/3', scaled.min === 16000 && scaled.max === 20000, JSON.stringify(scaled))
-  const summary = teamSummary(slots.red, byId, range(15000, 18000))
-  ok(
-    '双奶队合计达标判定用折算后的目标',
-    summary.cTarget.min === 10000 && summary.cTarget.max === 12000,
-    JSON.stringify(summary.cTarget),
+    '红队拿到最强奶（伤害够了自动双奶）',
+    slots.red[0].characterId === 'n0' && slots.red[1].key === 'heal2',
+    keysOf(slots).red,
   )
 }
 

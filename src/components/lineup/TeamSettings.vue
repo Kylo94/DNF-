@@ -1,32 +1,28 @@
 <script setup>
 import { computed } from 'vue'
-import { LAYOUT_OPTIONS } from '../../constants.js'
+import { HEAL_POLICIES, SLOT_DEFS } from '../../constants.js'
 
-const props = defineProps({
+defineProps({
   teamConfigs: { type: Array, default: () => [] },
-  globalLayout: { type: String, default: '1n3c' },
   poolStats: { type: Object, default: () => ({ total: 0, c: 0, n: 0 }) },
   difficulty: { type: String, default: '' },
 })
 
-const emit = defineEmits(['team-layout', 'range', 'auto-band', 'reset-ranges'])
+const emit = defineEmits(['heal-policy', 'range', 'auto-band', 'reset-ranges'])
 
-const globalLabel = computed(() => {
-  const meta = LAYOUT_OPTIONS.find((l) => l.value === props.globalLayout)
-  return meta ? meta.short : ''
-})
+const policyOptions = computed(() => HEAL_POLICIES)
+const slotLabel = (key) => SLOT_DEFS.find((d) => d.key === key)?.label || key
 
-function onRangeInput(teamId, role, bound, event) {
-  emit('range', teamId, role, bound, event.target.value)
+function onRangeInput(teamId, key, bound, event) {
+  emit('range', teamId, key, bound, event.target.value)
 }
 
-function layoutSelectValue(team) {
-  return team.ownLayout === null || team.ownLayout === undefined ? 'global' : team.ownLayout
+function onPolicyChange(teamId, event) {
+  emit('heal-policy', teamId, event.target.value)
 }
 
-function onLayoutChange(teamId, event) {
-  const value = event.target.value
-  emit('team-layout', teamId, value === 'global' ? null : value)
+function rangeOf(team, key) {
+  return team.ranges?.[key] || { min: null, max: null }
 }
 </script>
 
@@ -34,98 +30,100 @@ function onLayoutChange(teamId, event) {
   <section class="card settings">
     <header class="settings__head">
       <div>
-        <h2>队伍统一配置</h2>
+        <h2>队伍统一配置（按位置填写）</h2>
         <p class="muted">
-          三队统一生效、所有波次共用。<strong>C 单角色区间</strong>是准入档位，<strong>C 合计伤害</strong>是整队目标：
-          总和达标即可，优先挑「刚好凑够」的角色，避免强 C 堆在一队造成伤害过剩。区间内没人时用剩余角色兜底补位并标记区间外。
+          每个位置单独设面板区间，算法<strong>严格按区间匹配</strong>：区间内没角色就留空，不会硬塞区间外的角色（要补人手动拖即可）。
+          <strong>伤害目标</strong>用来判断「伤害够了」：C位1 + C位2 合计达到目标时，第 4 位自动补<strong>太阳奶</strong>（双奶），否则放 C位3。
         </p>
       </div>
       <div class="settings__actions">
-        <button class="btn btn--tiny" data-testid="btn-auto-band" @click="emit('auto-band')">按当前角色自动分档</button>
+        <button class="btn btn--tiny" data-testid="btn-auto-band" @click="emit('auto-band')">按角色池填一版门槛</button>
         <button class="btn btn--tiny btn--ghost" @click="emit('reset-ranges')">清空区间</button>
       </div>
     </header>
 
     <div class="rows">
-      <div v-for="team in teamConfigs" :key="team.id" class="row" :style="{ '--team-color': team.color }">
-        <div class="row__team">
+      <div
+        v-for="team in teamConfigs"
+        :key="team.id"
+        class="team-config"
+        :style="{ '--team-color': team.color }"
+        :data-testid="`config-${team.id}`"
+      >
+        <div class="team-config__name">
           <span class="dot" />
           <strong>{{ team.name }}</strong>
-        </div>
-
-        <label class="cell">
-          <span class="cell__label">队内配置</span>
           <select
-            :data-testid="`layout-${team.id}`"
-            :value="layoutSelectValue(team)"
-            @change="onLayoutChange(team.id, $event)"
+            class="policy"
+            :data-testid="`policy-${team.id}`"
+            :value="team.healPolicy"
+            @change="onPolicyChange(team.id, $event)"
           >
-            <option value="global">跟随全局（{{ globalLabel }}）</option>
-            <option v-for="l in LAYOUT_OPTIONS" :key="l.value" :value="l.value" :title="l.desc">
-              {{ l.short }}（{{ l.label }}）
+            <option v-for="p in policyOptions" :key="p.value" :value="p.value" :title="p.desc">
+              {{ p.short }}
             </option>
           </select>
-        </label>
+        </div>
 
-        <label class="cell">
-          <span class="cell__label">C 单角色区间</span>
+        <label v-for="key in ['heal1', 'heal2']" :key="key" class="cell cell--heal">
+          <span class="cell__label">{{ slotLabel(key) }}</span>
           <span class="range">
             <input
               type="number"
               placeholder="最低"
-              :data-testid="`range-${team.id}-C-min`"
-              :value="team.cRange.min ?? ''"
-              @input="onRangeInput(team.id, 'C', 'min', $event)"
+              :data-testid="`range-${team.id}-${key}-min`"
+              :value="rangeOf(team, key).min ?? ''"
+              @input="onRangeInput(team.id, key, 'min', $event)"
             />
             <em>~</em>
             <input
               type="number"
               placeholder="不限"
-              :data-testid="`range-${team.id}-C-max`"
-              :value="team.cRange.max ?? ''"
-              @input="onRangeInput(team.id, 'C', 'max', $event)"
+              :data-testid="`range-${team.id}-${key}-max`"
+              :value="rangeOf(team, key).max ?? ''"
+              @input="onRangeInput(team.id, key, 'max', $event)"
             />
           </span>
         </label>
 
         <label class="cell cell--total">
-          <span class="cell__label">C 合计伤害（总和目标）</span>
+          <span class="cell__label">伤害目标（C1+C2 达标就补太阳奶）</span>
           <span class="range">
             <input
               type="number"
               placeholder="最低"
-              :data-testid="`range-${team.id}-TOTAL-min`"
-              :value="team.cTotalRange.min ?? ''"
-              @input="onRangeInput(team.id, 'TOTAL', 'min', $event)"
+              :data-testid="`range-${team.id}-total-min`"
+              :value="team.total.min ?? ''"
+              @input="onRangeInput(team.id, 'total', 'min', $event)"
             />
             <em>~</em>
             <input
               type="number"
               placeholder="不限"
-              :data-testid="`range-${team.id}-TOTAL-max`"
-              :value="team.cTotalRange.max ?? ''"
-              @input="onRangeInput(team.id, 'TOTAL', 'max', $event)"
+              :data-testid="`range-${team.id}-total-max`"
+              :value="team.total.max ?? ''"
+              @input="onRangeInput(team.id, 'total', 'max', $event)"
             />
           </span>
         </label>
 
-        <label class="cell">
-          <span class="cell__label">奶增益区间</span>
+        <label v-for="key in ['c1', 'c2', 'c3']" :key="key" class="cell cell--c">
+          <span class="cell__label">{{ slotLabel(key) }}</span>
           <span class="range">
             <input
               type="number"
               placeholder="最低"
-              :data-testid="`range-${team.id}-N-min`"
-              :value="team.nRange.min ?? ''"
-              @input="onRangeInput(team.id, 'N', 'min', $event)"
+              :data-testid="`range-${team.id}-${key}-min`"
+              :value="rangeOf(team, key).min ?? ''"
+              @input="onRangeInput(team.id, key, 'min', $event)"
             />
             <em>~</em>
             <input
               type="number"
               placeholder="不限"
-              :data-testid="`range-${team.id}-N-max`"
-              :value="team.nRange.max ?? ''"
-              @input="onRangeInput(team.id, 'N', 'max', $event)"
+              :data-testid="`range-${team.id}-${key}-max`"
+              :value="rangeOf(team, key).max ?? ''"
+              @input="onRangeInput(team.id, key, 'max', $event)"
             />
           </span>
         </label>
@@ -133,8 +131,8 @@ function onLayoutChange(teamId, event) {
     </div>
 
     <p class="settings__foot">
-      当前波次角色池（{{ difficulty }}）：输出C {{ poolStats.c }} 个 · 辅助奶 {{ poolStats.n }} 个。填「最低」不填「最高」表示上不封顶；
-      两个都空表示不限。合计伤害只统计该队 C 的伤害总和。
+      当前角色池（{{ difficulty }}）：输出C {{ poolStats.c }} 个 · 辅助奶 {{ poolStats.n }} 个。
+      「最低」填数字、「不限」留空即为上不封顶；伤害目标一般只填最低值。改完点「一键排完全部波次」重新分配。
     </p>
   </section>
 </template>
@@ -156,7 +154,7 @@ function onLayoutChange(teamId, event) {
 
 .muted {
   margin: 0;
-  max-width: 880px;
+  max-width: 900px;
   font-size: 12.5px;
   line-height: 1.7;
   color: var(--text-dim);
@@ -174,13 +172,13 @@ function onLayoutChange(teamId, event) {
 .rows {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
-.row {
+.team-config {
   display: grid;
-  grid-template-columns: 92px minmax(168px, 0.9fr) minmax(178px, 1.1fr) minmax(196px, 1.2fr) minmax(178px, 1.1fr);
-  gap: 12px;
+  grid-template-columns: 108px repeat(2, minmax(150px, 1fr)) minmax(180px, 1.15fr);
+  gap: 10px 12px;
   align-items: center;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -189,15 +187,17 @@ function onLayoutChange(teamId, event) {
   background: rgba(255, 255, 255, 0.015);
 }
 
-.row__team {
+.team-config__name {
+  grid-row: span 2;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.row__team strong {
+.team-config__name strong {
   color: var(--team-color);
   letter-spacing: 1px;
+  font-size: 14px;
 }
 
 .dot {
@@ -207,15 +207,28 @@ function onLayoutChange(teamId, event) {
   background: var(--team-color);
 }
 
+.policy {
+  padding: 5px 7px;
+  font-size: 12px;
+}
+
 .cell {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
 
 .cell__label {
   font-size: 11.5px;
   color: var(--text-dim);
+}
+
+.cell--heal .cell__label {
+  color: #34d399;
+}
+
+.cell--c .cell__label {
+  color: #60a5fa;
 }
 
 .cell--total .cell__label {
@@ -224,8 +237,8 @@ function onLayoutChange(teamId, event) {
 
 select,
 input {
-  padding: 7px 9px;
-  border-radius: 9px;
+  padding: 6px 8px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg-input);
   color: var(--text);
@@ -260,9 +273,15 @@ input:focus {
   color: var(--text-dim);
 }
 
-@media (max-width: 1300px) {
-  .row {
+@media (max-width: 1200px) {
+  .team-config {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .team-config__name {
+    grid-row: span 1;
+    flex-direction: row;
+    align-items: center;
   }
 }
 </style>

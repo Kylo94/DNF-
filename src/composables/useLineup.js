@@ -2,24 +2,23 @@ import { computed, reactive, watch } from 'vue'
 import {
   DIFFICULTIES,
   MAX_WAVES,
+  SLOT_KEYS,
   STORAGE_KEY_LINEUP,
   STORAGE_KEY_LINEUP_V1,
+  STORAGE_KEY_LINEUP_V2,
   TEAMS,
-  TEAM_LAYOUTS,
   waveName,
 } from '../constants.js'
 import { useCharacters } from './useCharacters.js'
 import { uid } from '../utils/format.js'
 import { isKnownFormat } from '../utils/display.js'
 import {
-  ROLE_LABEL,
   autoAssign,
   checkSlotRange,
   computeBench,
   computeWavesNeeded,
-  layoutSlots,
-  normalizeRange,
-  resolveLayout,
+  createSlots,
+  slotDef,
   suggestRanges,
   teamSummary,
   validateLineup,
@@ -29,33 +28,43 @@ function emptyRange() {
   return { min: null, max: null }
 }
 
-function makeConfig(layout = 'auto') {
+function emptyRanges() {
+  return Object.fromEntries(SLOT_KEYS.map((key) => [key, emptyRange()]))
+}
+
+/** v3 每队配置：5 个位置区间 + 伤害目标 + 双奶策略 */
+function makeTeamConfig(healPolicy = 'auto') {
   return {
-    red: { layout: null, cRange: emptyRange(), cTotalRange: emptyRange(), nRange: emptyRange() },
-    yellow: { layout: null, cRange: emptyRange(), cTotalRange: emptyRange(), nRange: emptyRange() },
-    green: { layout: null, cRange: emptyRange(), cTotalRange: emptyRange(), nRange: emptyRange() },
+    healPolicy,
+    ranges: emptyRanges(),
+    total: emptyRange(),
   }
 }
 
-function emptyTeams(layout = '1n3c') {
-  const teams = {}
-  for (const team of TEAMS) {
-    teams[team.id] = layoutSlots(layout).map((s) => ({ role: s.role, characterId: null, outOfRange: false }))
+function defaultConfig() {
+  return {
+    red: makeTeamConfig('auto'),
+    yellow: makeTeamConfig('auto'),
+    green: makeTeamConfig('single'), // 绿队默认混子队：只用单奶带满
   }
+}
+
+function emptyTeams() {
+  const teams = {}
+  for (const team of TEAMS) teams[team.id] = createSlots('single')
   return teams
 }
 
-function makeWave(difficulty = DIFFICULTIES[0], layout = 'auto') {
-  return { id: uid(), difficulty, teams: emptyTeams(layout), notes: {} }
+function makeWave(difficulty = DIFFICULTIES[0]) {
+  return { id: uid(), difficulty, teams: emptyTeams(), notes: {} }
 }
 
 function defaultState() {
   return {
-    version: 2,
+    version: 3,
     displayFormat: 'player-name-value',
     defaultDifficulty: DIFFICULTIES[0],
-    globalLayout: 'auto',
-    config: makeConfig(),
+    config: defaultConfig(),
     waves: [makeWave()],
     activeWave: 0,
     assignedAt: null,
@@ -67,31 +76,55 @@ function normalizeRangeObject(value) {
   return { ...emptyRange(), ...(value || {}) }
 }
 
-/** 逐队配置做一次兼容处理 */
-function normalizeConfig(raw) {
-  const base = makeConfig()
+/** 兼容 v2（队内配置 + 单角色区间/合计/奶区间）与更早的数据 */
+function normalizeConfig(raw, legacy = {}) {
+  const base = defaultConfig()
   if (!raw) return base
   for (const team of TEAMS) {
     const saved = raw[team.id]
     if (!saved) continue
+    if (saved.ranges) {
+      base[team.id] = {
+        healPolicy: saved.healPolicy || base[team.id].healPolicy,
+        ranges: Object.fromEntries(SLOT_KEYS.map((key) => [key, normalizeRangeObject(saved.ranges?.[key])])),
+        total: normalizeRangeObject(saved.total),
+      }
+      continue
+    }
+    const isLast = team.id === TEAMS[TEAMS.length - 1].id
+    const legacyLayout = saved.layout || legacy.globalLayout || 'auto'
+    const policy =
+      legacyLayout === '2n2c' ? 'double' : legacyLayout === '1n3c' ? 'single' : isLast ? 'single' : 'auto'
     base[team.id] = {
-      layout: saved.layout ?? null,
-      cRange: normalizeRangeObject(saved.cRange),
-      cTotalRange: normalizeRangeObject(saved.cTotalRange),
-      nRange: normalizeRangeObject(saved.nRange),
+      healPolicy: policy,
+      ranges: {
+        heal1: normalizeRangeObject(saved.nRange),
+        heal2: normalizeRangeObject(saved.nRange),
+        c1: normalizeRangeObject(saved.cRange),
+        c2: normalizeRangeObject(saved.cRange),
+        c3: normalizeRangeObject(saved.cRange),
+      },
+      total: normalizeRangeObject(saved.cTotalRange),
     }
   }
   return base
 }
 
-function normalizeSlots(list, fallbackLayout = '1n3c') {
-  if (!Array.isArray(list) || !list.length) {
-    return layoutSlots(fallbackLayout).map((s) => ({ role: s.role, characterId: null, outOfRange: false }))
-  }
-  return list.map((s) => ({
-    role: s.role === 'N' ? 'N' : 'C',
-    characterId: s.characterId || null,
-    outOfRange: Boolean(s.outOfRange),
+/** 旧槽位（只有 role）补上位置 key */
+function normalizeSlots(list) {
+  if (!Array.isArray(list) || !list.length) return createSlots('single')
+  let healIndex = 0
+  let cIndex = 0
+  const keys = list.map((slot) => {
+    if (slot.key && SLOT_KEYS.includes(slot.key)) return slot.key
+    if (slot.role === 'N') return healIndex++ === 0 ? 'heal1' : 'heal2'
+    return ['c1', 'c2', 'c3'][cIndex++] || 'c3'
+  })
+  return list.map((slot, index) => ({
+    key: keys[index],
+    role: slotDef(keys[index]).role,
+    characterId: slot.characterId || null,
+    outOfRange: Boolean(slot.outOfRange),
   }))
 }
 
@@ -105,36 +138,48 @@ function normalizeWaves(raw) {
   }))
 }
 
-/** 旧版单波次数据迁移成 v2 */
-function migrateFromV1() {
-  try {
-    const text = localStorage.getItem(STORAGE_KEY_LINEUP_V1)
-    if (!text) return null
-    const old = JSON.parse(text)
-    const state = defaultState()
-    state.defaultDifficulty = DIFFICULTIES.includes(old.difficulty) ? old.difficulty : DIFFICULTIES[0]
-    state.globalLayout = old.globalLayout || '1n3c'
-    state.config = normalizeConfig(old.teams)
-    state.waves = [
-      {
-        id: uid(),
-        difficulty: state.defaultDifficulty,
-        teams: Object.fromEntries(TEAMS.map((t) => [t.id, normalizeSlots(old.teams?.[t.id]?.slots)])),
-      },
-    ]
-    state.assignedAt = old.assignedAt || null
-    console.info('已把旧版单波次编队数据迁移为多波次结构')
-    return state
-  } catch (err) {
-    console.warn('旧版编队数据迁移失败：', err)
-    return null
+/** 旧版本数据迁移 */
+function migrateLegacy() {
+  const sources = [
+    [STORAGE_KEY_LINEUP_V2, 2],
+    [STORAGE_KEY_LINEUP_V1, 1],
+  ]
+  for (const [key, version] of sources) {
+    try {
+      const text = localStorage.getItem(key)
+      if (!text) continue
+      const old = JSON.parse(text)
+      const state = defaultState()
+      state.defaultDifficulty = DIFFICULTIES.includes(old.difficulty) ? old.difficulty : DIFFICULTIES[0]
+      state.displayFormat = isKnownFormat(old.displayFormat) ? old.displayFormat : state.displayFormat
+      state.config = normalizeConfig(old.config || old.teams, { globalLayout: old.globalLayout })
+      state.waves =
+        version === 1 && old.teams
+          ? [
+              {
+                id: uid(),
+                difficulty: state.defaultDifficulty,
+                teams: Object.fromEntries(
+                  TEAMS.map((t) => [t.id, normalizeSlots(old.teams?.[t.id]?.slots)]),
+                ),
+                notes: {},
+              },
+            ]
+          : normalizeWaves(old.waves)
+      state.assignedAt = old.assignedAt || null
+      console.info(`已把旧版（v${version}）编队数据迁移为「按位置配置」`)
+      return state
+    } catch (err) {
+      console.warn('旧版编队数据迁移失败：', err)
+    }
   }
+  return null
 }
 
 function loadState() {
   try {
     const text = localStorage.getItem(STORAGE_KEY_LINEUP)
-    if (!text) return migrateFromV1() || defaultState()
+    if (!text) return migrateLegacy() || defaultState()
     const parsed = JSON.parse(text)
     const base = defaultState()
     return {
@@ -144,7 +189,6 @@ function loadState() {
       defaultDifficulty: DIFFICULTIES.includes(parsed.defaultDifficulty)
         ? parsed.defaultDifficulty
         : base.defaultDifficulty,
-      globalLayout: parsed.globalLayout || base.globalLayout,
       config: normalizeConfig(parsed.config),
       waves: normalizeWaves(parsed.waves),
       activeWave: Number.isInteger(parsed.activeWave) ? parsed.activeWave : 0,
@@ -157,40 +201,31 @@ function loadState() {
 
 const state = reactive(loadState())
 
-/** 编队（排表）状态与操作：多波次 + 逐队区间 + 合计伤害目标 */
+/** 编队（排表）状态与操作：严格按位置区间匹配，双奶是可选方案 */
 export function useLineup() {
   const { characters } = useCharacters()
 
   const byId = computed(() => new Map(characters.value.map((c) => [c.id, c])))
 
-  /** 队伍配置（含生效的队内配置） */
   const teamConfigs = computed(() =>
-    TEAMS.map((t) => {
-      const config = state.config[t.id]
-      return {
-        ...t,
-        ...config,
-        ownLayout: config.layout,
-        layout: resolveLayout(config, state.globalLayout),
-        cTotalRange: normalizeRange(config.cTotalRange),
-      }
-    }),
+    TEAMS.map((t) => ({
+      ...t,
+      ...state.config[t.id],
+      ranges: state.config[t.id].ranges,
+      total: state.config[t.id].total,
+    })),
   )
 
   const teamsPayload = computed(() =>
-    TEAMS.map((t) => {
-      const config = state.config[t.id]
-      return {
-        id: t.id,
-        layout: config.layout,
-        cRange: normalizeRange(config.cRange),
-        cTotalRange: normalizeRange(config.cTotalRange),
-        nRange: normalizeRange(config.nRange),
-      }
-    }),
+    teamConfigs.value.map((t) => ({
+      id: t.id,
+      name: t.name,
+      healPolicy: t.healPolicy,
+      ranges: t.ranges,
+      total: t.total,
+    })),
   )
 
-  /** 每个难度已登记的角色 */
   const poolsByDifficulty = computed(() => {
     const map = {}
     for (const difficulty of DIFFICULTIES) {
@@ -201,50 +236,21 @@ export function useLineup() {
 
   const activeIndex = computed(() => Math.min(Math.max(state.activeWave, 0), state.waves.length - 1))
   const activeWave = computed(() => state.waves[activeIndex.value] || state.waves[0])
-
-  /** 本波可用角色（该难度） */
   const activePool = computed(() => poolsByDifficulty.value[activeWave.value?.difficulty] || [])
-
   const activeSlots = computed(() => activeWave.value?.teams || emptyTeams())
 
-  /** 已上场角色 id -> 位置（全部波次） */
-  const assignments = computed(() => {
-    const map = new Map()
-    state.waves.forEach((wave, waveIndex) => {
-      for (const list of Object.values(wave.teams)) {
-        list.forEach((slot, index) => {
-          if (slot.characterId) map.set(slot.characterId, { waveIndex, index })
-        })
-      }
-    })
-    return map
-  })
-
-  /** 未上场：全部难度里都没排上的角色 */
   const bench = computed(() => computeBench(characters.value, state.waves, byId.value))
 
   const warnings = computed(() =>
-    validateLineup({
-      waves: state.waves.map((wave) => ({
-        ...wave,
-        teamConfig: Object.fromEntries(TEAMS.map((t) => [t.id, { cTotalRange: normalizeRange(state.config[t.id].cTotalRange) }])),
-      })),
-      teams: TEAMS,
-      byId: byId.value,
-    }),
+    validateLineup({ waves: state.waves, teams: TEAMS, byId: byId.value, teamConfigs: teamConfigs.value }),
   )
 
   const activeWarnings = computed(() => warnings.value.filter((w) => w.waveIndex === activeIndex.value))
-  const otherWarnings = computed(() => warnings.value.filter((w) => w.waveIndex !== activeIndex.value))
 
   const teamStats = computed(() => {
     const map = {}
     for (const team of TEAMS) {
-      map[team.id] = teamSummary(
-        activeSlots.value[team.id] || [],
-        byId.value,
-        normalizeRange(state.config[team.id].cTotalRange),
-      )
+      map[team.id] = teamSummary(activeSlots.value[team.id] || [], byId.value, state.config[team.id].total)
     }
     return map
   })
@@ -259,7 +265,6 @@ export function useLineup() {
     n: activePool.value.filter((c) => c.type === 'N').length,
   }))
 
-  /** 新波次默认难度下的角色池（自动分档用） */
   const defaultPoolStats = computed(() => {
     const pool = poolsByDifficulty.value[state.defaultDifficulty] || []
     return {
@@ -269,7 +274,6 @@ export function useLineup() {
     }
   })
 
-  /** 波次概览（页签上显示人数） */
   const waveSummaries = computed(() =>
     state.waves.map((wave, index) => {
       const assigned = TEAMS.reduce(
@@ -283,24 +287,23 @@ export function useLineup() {
         difficulty: wave.difficulty,
         assigned,
         total,
-        missingHeal: TEAMS.some((t) => {
-          const list = wave.teams[t.id] || []
-          return list.some((s) => s.role === 'N' && !s.characterId)
-        }),
+        missingHeal: TEAMS.some((t) => (wave.teams[t.id] || []).some((s) => s.role === 'N' && !s.characterId)),
       }
     }),
   )
 
-  const overallStats = computed(() => {
-    const used = assignments.value.size
-    const totalCharacters = characters.value.length
-    return {
-      used,
-      totalCharacters,
-      left: totalCharacters - used,
-      waves: state.waves.length,
-    }
-  })
+  const overallStats = computed(() => ({
+    used: new Set(
+      state.waves.flatMap((w) =>
+        Object.values(w.teams)
+          .flat()
+          .filter((s) => s.characterId)
+          .map((s) => s.characterId),
+      ),
+    ).size,
+    totalCharacters: characters.value.length,
+    waves: state.waves.length,
+  }))
 
   /* ------------------------- 内部工具 ------------------------- */
 
@@ -316,35 +319,17 @@ export function useLineup() {
     for (const team of TEAMS) refreshFlags(wave, team.id)
   }
 
-  /** 队伍配置变化时重建槽位（保留成员，多出来的回到候补） */
+  /** 切换单/双奶时按位置 key 保留成员，落选的回未登场 */
   function rebuildSlots(wave, teamId, layout) {
-    const target = layoutSlots(layout)
-    const current = wave.teams[teamId]
-    const carryN = current.filter((s) => s.role === 'N' && s.characterId).map((s) => s.characterId)
-    const carryC = current.filter((s) => s.role === 'C' && s.characterId).map((s) => s.characterId)
-    let ni = 0
-    let ci = 0
-    wave.teams[teamId] = target.map((s) => {
-      let characterId = null
-      if (s.role === 'N' && ni < carryN.length) characterId = carryN[ni++]
-      if (s.role === 'C' && ci < carryC.length) characterId = carryC[ci++]
-      return { role: s.role, characterId, outOfRange: false }
-    })
+    const carry = Object.fromEntries(
+      (wave.teams[teamId] || []).map((s) => [s.key, { id: s.characterId, out: s.outOfRange }]),
+    )
+    wave.teams[teamId] = createSlots(layout).map((s) => ({
+      ...s,
+      characterId: carry[s.key]?.id || null,
+      outOfRange: carry[s.key]?.out || false,
+    }))
     refreshFlags(wave, teamId)
-  }
-
-  function syncLayouts() {
-    for (const wave of state.waves) {
-      for (const team of TEAMS) {
-        const config = state.config[team.id]
-        const effective = resolveLayout(config, state.globalLayout)
-        // 「自动配置」由算法按波次决定，槽位以现有数据为准，不要重建
-        if (effective === 'auto') continue
-        const currentRoles = wave.teams[team.id].map((s) => s.role).join('')
-        const targetRoles = layoutSlots(effective).map((s) => s.role).join('')
-        if (currentRoles !== targetRoles) rebuildSlots(wave, team.id, effective)
-      }
-    }
   }
 
   function charactersUsedExcept(waveIndex) {
@@ -358,66 +343,60 @@ export function useLineup() {
     return used
   }
 
-  function fillWave(wave, usedElsewhere) {
-    const pool = (poolsByDifficulty.value[wave.difficulty] || []).filter((c) => !usedElsewhere.has(c.id))
-    const { slots, notes } = autoAssign(pool, { globalLayout: state.globalLayout, teams: teamsPayload.value })
-    for (const team of TEAMS) wave.teams[team.id] = slots[team.id]
-    wave.notes = notes || {}
-    refreshWaveFlags(wave)
-    return wave
-  }
-
   /* ------------------------- 操作 ------------------------- */
 
-  /** 一键把所有角色按难度排进各波（第一波、第二波……排完为止） */
+  /** 一键排完：严格匹配，排不出来就停（不再硬凑出空波） */
   function assignAll() {
     const waves = []
     for (const difficulty of DIFFICULTIES) {
       const pool = poolsByDifficulty.value[difficulty] || []
       if (!pool.length) continue
-      const count = computeWavesNeeded(pool, { globalLayout: state.globalLayout, teams: teamsPayload.value }, MAX_WAVES)
-      for (let i = 0; i < count; i += 1) waves.push(makeWave(difficulty, state.globalLayout))
-    }
-    if (!waves.length) {
-      state.waves = [makeWave(state.defaultDifficulty, state.globalLayout)]
-      state.activeWave = 0
-      state.assignedAt = Date.now()
-      return { waves: state.waves.length, assigned: 0 }
-    }
-
-    const used = new Set()
-    for (const wave of waves) {
-      const pool = (poolsByDifficulty.value[wave.difficulty] || []).filter((c) => !used.has(c.id))
-      const { slots, notes } = autoAssign(pool, { globalLayout: state.globalLayout, teams: teamsPayload.value })
-      for (const team of TEAMS) wave.teams[team.id] = slots[team.id]
-      wave.notes = notes || {}
-      refreshWaveFlags(wave)
-      for (const list of Object.values(wave.teams)) {
-        for (const slot of list) if (slot.characterId) used.add(slot.characterId)
+      const maxWaves = computeWavesNeeded(pool, { teams: teamsPayload.value }, MAX_WAVES)
+      const used = new Set()
+      for (let i = 0; i < maxWaves; i += 1) {
+        const available = pool.filter((c) => !used.has(c.id))
+        const result = autoAssign(available, { teams: teamsPayload.value })
+        const count = Object.values(result.slots).flat().filter((s) => s.characterId).length
+        if (!count) break // 这一波一个都排不出来 → 后面更排不出来
+        waves.push({ id: uid(), difficulty, teams: result.slots, notes: result.notes || {} })
+        for (const list of Object.values(result.slots)) {
+          for (const slot of list) if (slot.characterId) used.add(slot.characterId)
+        }
       }
     }
-
+    if (!waves.length) {
+      state.waves = [makeWave(state.defaultDifficulty)]
+      state.activeWave = 0
+      state.assignedAt = Date.now()
+      state.configDirty = false
+      return { waves: 1, assigned: 0 }
+    }
     state.waves = waves
     state.activeWave = 0
     state.assignedAt = Date.now()
     state.configDirty = false
-    return { waves: waves.length, assigned: used.size }
+    return { waves: waves.length, assigned: overallStats.value.used }
   }
 
   /** 只重排当前这一波（其他波已上场的角色不会重复上场） */
   function assignWave(index = activeIndex.value) {
     const wave = state.waves[index]
     if (!wave) return { assigned: 0 }
-    fillWave(wave, charactersUsedExcept(index))
+    const used = charactersUsedExcept(index)
+    const pool = (poolsByDifficulty.value[wave.difficulty] || []).filter((c) => !used.has(c.id))
+    const result = autoAssign(pool, { teams: teamsPayload.value })
+    wave.teams = result.slots
+    wave.notes = result.notes || {}
     state.assignedAt = Date.now()
     state.configDirty = false
-    return { assigned: TEAMS.reduce((sum, t) => sum + wave.teams[t.id].filter((s) => s.characterId).length, 0) }
+    return {
+      assigned: TEAMS.reduce((sum, t) => sum + wave.teams[t.id].filter((s) => s.characterId).length, 0),
+    }
   }
 
   function addWave() {
     if (state.waves.length >= MAX_WAVES) return { ok: false, message: `最多 ${MAX_WAVES} 波` }
-    const wave = makeWave(state.defaultDifficulty, state.globalLayout)
-    state.waves.push(wave)
+    state.waves.push(makeWave(state.defaultDifficulty))
     const at = state.waves.length - 1
     state.activeWave = at
     return { ok: true, message: `已添加${waveName(at)}` }
@@ -425,7 +404,7 @@ export function useLineup() {
 
   function removeWave(index = activeIndex.value) {
     if (state.waves.length <= 1) {
-      state.waves = [makeWave(state.defaultDifficulty, state.globalLayout)]
+      state.waves = [makeWave(state.defaultDifficulty)]
       state.activeWave = 0
       return { ok: true, message: '已清空当前波次' }
     }
@@ -438,22 +417,29 @@ export function useLineup() {
     const wave = state.waves[index]
     if (!wave) return
     for (const team of TEAMS) {
-      wave.teams[team.id] = wave.teams[team.id].map((s) => ({ role: s.role, characterId: null, outOfRange: false }))
+      for (const slot of wave.teams[team.id]) {
+        slot.characterId = null
+        slot.outOfRange = false
+      }
     }
+    wave.notes = {}
     state.assignedAt = null
   }
 
   function clearAllWaves() {
-    state.waves = state.waves.map((wave) => ({
-      ...wave,
-      teams: Object.fromEntries(
-        TEAMS.map((t) => [t.id, wave.teams[t.id].map((s) => ({ role: s.role, characterId: null, outOfRange: false }))]),
-      ),
-    }))
+    for (const wave of state.waves) {
+      for (const team of TEAMS) {
+        for (const slot of wave.teams[team.id]) {
+          slot.characterId = null
+          slot.outOfRange = false
+        }
+      }
+      wave.notes = {}
+    }
     state.assignedAt = null
   }
 
-  /** 导入时整体替换波次与区间配置 */
+  /** 导入时整体替换波次与配置 */
   function replaceAll({ waves, config } = {}) {
     if (Array.isArray(waves) && waves.length) {
       state.waves = normalizeWaves(waves)
@@ -461,7 +447,6 @@ export function useLineup() {
       state.activeWave = 0
       state.assignedAt = Date.now()
       state.configDirty = false
-      syncLayouts()
     }
   }
 
@@ -477,60 +462,43 @@ export function useLineup() {
   }
 
   function setDefaultDifficulty(value) {
-    if (!DIFFICULTIES.includes(value)) return
-    state.defaultDifficulty = value
+    if (DIFFICULTIES.includes(value)) state.defaultDifficulty = value
   }
 
   function setDisplayFormat(value) {
     if (isKnownFormat(value)) state.displayFormat = value
   }
 
-  function setGlobalLayout(value) {
-    if (state.globalLayout === value) return
-    state.globalLayout = value
-    for (const wave of state.waves) wave.notes = {}
-    syncLayouts()
+  function setHealPolicy(teamId, policy) {
+    const config = state.config[teamId]
+    if (!config || config.healPolicy === policy) return
+    config.healPolicy = policy
     state.configDirty = true
   }
 
-  function setTeamLayout(teamId, layout) {
+  /** key: heal1 / heal2 / c1 / c2 / c3 / total */
+  function setRange(teamId, key, bound, rawValue) {
     const config = state.config[teamId]
-    if (config.layout === layout) return
-    config.layout = layout
-    for (const wave of state.waves) delete wave.notes?.[teamId]
-    const effective = resolveLayout(config, state.globalLayout)
-    for (const wave of state.waves) {
-      if (effective === 'auto') continue
-      const currentRoles = wave.teams[teamId].map((s) => s.role).join('')
-      const targetRoles = layoutSlots(effective).map((s) => s.role).join('')
-      if (currentRoles !== targetRoles) rebuildSlots(wave, teamId, effective)
-    }
-    state.configDirty = true
-  }
-
-  function setRange(teamId, role, bound, rawValue) {
-    const config = state.config[teamId]
-    const key = role === 'TOTAL' ? 'cTotalRange' : role === 'N' ? 'nRange' : 'cRange'
-    const range = config[key]
+    if (!config) return
+    const target = key === 'total' ? config.total : config.ranges[key]
+    if (!target) return
     const text = String(rawValue ?? '').trim()
     const value = text === '' ? null : Number(text)
-    range[bound] = Number.isFinite(value) ? value : null
+    target[bound] = Number.isFinite(value) ? value : null
     for (const wave of state.waves) refreshFlags(wave, teamId)
     state.configDirty = true
   }
 
   function applySuggestedRanges() {
     const pool = poolsByDifficulty.value[state.defaultDifficulty] || characters.value
-    const suggested = suggestRanges(pool, state.globalLayout)
+    const suggested = suggestRanges(pool)
     for (const team of TEAMS) {
       const item = suggested[team.id]
       if (!item) continue
-      state.config[team.id] = {
-        ...state.config[team.id],
-        cRange: { ...item.cRange },
-        cTotalRange: { ...item.cTotalRange },
-        nRange: { ...item.nRange },
-      }
+      state.config[team.id].ranges = Object.fromEntries(
+        SLOT_KEYS.map((key) => [key, normalizeRangeObject(item.ranges?.[key])]),
+      )
+      state.config[team.id].total = normalizeRangeObject(item.total)
       for (const wave of state.waves) refreshFlags(wave, team.id)
     }
     state.configDirty = true
@@ -538,28 +506,13 @@ export function useLineup() {
 
   function resetRanges() {
     for (const team of TEAMS) {
-      state.config[team.id] = {
-        ...state.config[team.id],
-        cRange: emptyRange(),
-        cTotalRange: emptyRange(),
-        nRange: emptyRange(),
-      }
+      state.config[team.id].ranges = emptyRanges()
+      state.config[team.id].total = emptyRange()
       for (const wave of state.waves) refreshFlags(wave, team.id)
     }
     state.configDirty = true
   }
 
-  function teamName(teamId) {
-    return TEAMS.find((t) => t.id === teamId)?.name || teamId
-  }
-
-  function findWaveSlot(waveIndex, teamId, index) {
-    const wave = state.waves[waveIndex]
-    if (!wave) return null
-    return wave.teams[teamId]?.[index] || null
-  }
-
-  /** 校验某一波里同一个玩家是否重复上场 */
   function duplicatePlayerInWave(wave, ignoreIds = new Set()) {
     const seen = new Map()
     for (const team of TEAMS) {
@@ -574,21 +527,23 @@ export function useLineup() {
     return null
   }
 
-  /**
-   * 拖拽 / 点击移动（支持跨波次）
-   * from: { kind:'slot', waveIndex, teamId, index } | { kind:'bench', characterId }
-   * to:   { kind:'slot', waveIndex, teamId, index } | { kind:'bench' }
-   */
+  function findWaveSlot(waveIndex, teamId, index) {
+    const wave = state.waves[waveIndex]
+    if (!wave) return null
+    return wave.teams[teamId]?.[index] || null
+  }
+
+  /** 拖拽 / 点击移动（支持跨波次） */
   function transfer(from, to) {
     if (!from || !to) return { ok: false, message: '' }
 
     if (to.kind === 'bench') {
-      if (from.kind !== 'slot') return { ok: false, message: '候补区里的角色已经在场下' }
+      if (from.kind !== 'slot') return { ok: false, message: '未登场列表里的角色已经在场下' }
       const slot = findWaveSlot(from.waveIndex, from.teamId, from.index)
       if (!slot?.characterId) return { ok: false, message: '该位置没有角色' }
       slot.characterId = null
       slot.outOfRange = false
-      return { ok: true, message: '已移到候补区' }
+      return { ok: true, message: '已移到未登场' }
     }
 
     const targetWave = state.waves[to.waveIndex]
@@ -610,24 +565,23 @@ export function useLineup() {
     }
 
     if (sourceCharacter.type !== targetSlot.role) {
-      return { ok: false, message: `${ROLE_LABEL[targetSlot.role]}位只能放${ROLE_LABEL[targetSlot.role]}` }
+      const label = targetSlot.role === 'N' ? '奶位' : 'C 位'
+      return { ok: false, message: `${label}只能放${targetSlot.role === 'N' ? '辅助奶' : '输出C'}` }
     }
 
     const displacedId = targetSlot.characterId
-    const ignore = new Set(displacedId ? [displacedId] : [])
+    const isAuto = !state.config[to.teamId] || Boolean(state.config[to.teamId])
 
     if (from.kind === 'slot') {
       const sourceWave = state.waves[from.waveIndex]
       const movingOut = sourceSlot.characterId
       const isSwap = Boolean(displacedId)
-      // 交换（目标可能为空）
       sourceSlot.characterId = displacedId || null
       targetSlot.characterId = movingOut
       if (from.waveIndex !== to.waveIndex) {
         const conflictSource = duplicatePlayerInWave(sourceWave)
         const conflictTarget = duplicatePlayerInWave(targetWave)
         if (conflictSource || conflictTarget) {
-          // 回滚
           sourceSlot.characterId = movingOut
           targetSlot.characterId = displacedId || null
           return { ok: false, message: `玩家「${conflictSource || conflictTarget}」在同一波里已经上场了一个角色` }
@@ -635,17 +589,28 @@ export function useLineup() {
         refreshWaveFlags(sourceWave)
       }
       refreshWaveFlags(targetWave)
+      void isAuto
       return { ok: true, message: isSwap ? '已互换位置' : '已移动' }
     }
 
-    // 候补区 -> 场上
-    const conflict = duplicatePlayerInWave(targetWave, ignore)
-    if (conflict) {
-      return { ok: false, message: `玩家「${conflict}」本波已经上场了一个角色` }
-    }
+    const conflict = duplicatePlayerInWave(targetWave, new Set(displacedId ? [displacedId] : []))
+    if (conflict) return { ok: false, message: `玩家「${conflict}」本波已经上场了一个角色` }
     targetSlot.characterId = sourceCharacter.id
-    if (targetSlot.characterId) refreshWaveFlags(targetWave)
+    refreshWaveFlags(targetWave)
     return { ok: true, message: `${sourceCharacter.name} 已上场（${waveName(to.waveIndex)}）` }
+  }
+
+  /** 手动切换某队单奶 / 双奶 */
+  function toggleTeamLayout(waveIndex, teamId) {
+    const wave = state.waves[waveIndex]
+    if (!wave) return { ok: false, message: '' }
+    const isDouble = wave.teams[teamId].filter((s) => s.role === 'N').length >= 2
+    rebuildSlots(wave, teamId, isDouble ? 'single' : 'double')
+    if (wave.notes) delete wave.notes[teamId]
+    return {
+      ok: true,
+      message: `${TEAMS.find((t) => t.id === teamId)?.name}已切换为${isDouble ? '单奶 1奶3C' : '双奶 2奶2C'}`,
+    }
   }
 
   /** 双奶队里两个奶位互换（常驻 <-> 太阳） */
@@ -655,17 +620,19 @@ export function useLineup() {
     const heals = wave.teams[teamId].filter((s) => s.role === 'N')
     if (heals.length < 2) return { ok: false, message: '当前不是双奶配置' }
     const [a, b] = heals
-    const temp = a.characterId
+    const id = a.characterId
+    const out = a.outOfRange
     a.characterId = b.characterId
-    b.characterId = temp
+    a.outOfRange = b.outOfRange
+    b.characterId = id
+    b.outOfRange = out
     refreshFlags(wave, teamId)
-    return { ok: true, message: `${teamName(teamId)}两个奶位已互换` }
+    return { ok: true, message: `${TEAMS.find((t) => t.id === teamId)?.name}两个奶位已互换` }
   }
 
   return {
     state,
     teams: TEAMS,
-    layouts: TEAM_LAYOUTS,
     byId,
     teamConfigs,
     poolsByDifficulty,
@@ -676,11 +643,9 @@ export function useLineup() {
     activePoolStats,
     defaultPoolStats,
     activeAssignedCount,
-    assignments,
     bench,
     warnings,
     activeWarnings,
-    otherWarnings,
     teamStats,
     waveSummaries,
     overallStats,
@@ -695,12 +660,12 @@ export function useLineup() {
     setWaveDifficulty,
     setDefaultDifficulty,
     setDisplayFormat,
-    setGlobalLayout,
-    setTeamLayout,
+    setHealPolicy,
     setRange,
     applySuggestedRanges,
     resetRanges,
     transfer,
+    toggleTeamLayout,
     swapHealSlots,
   }
 }

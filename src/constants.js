@@ -55,43 +55,34 @@ export const TEAMS = [
   { id: 'green', name: '绿队', color: '#4ade80', soft: 'rgba(74, 222, 128, 0.14)' },
 ]
 
-/** 队伍配置：单奶（1奶3C）/ 双奶（2奶2C，一常驻 buff 奶 + 一太阳奶） */
-export const TEAM_LAYOUTS = [
-  {
-    value: '1n3c',
-    label: '单奶配置',
-    short: '1奶3C',
-    healSlots: 1,
-    cSlots: 3,
-    desc: '1 个辅助奶 + 3 个输出C',
-  },
-  {
-    value: '2n2c',
-    label: '双奶配置',
-    short: '2奶2C',
-    healSlots: 2,
-    cSlots: 2,
-    desc: '2 个辅助奶（常驻 buff 奶 + 太阳奶）+ 2 个输出C',
-  },
+/** 队伍里的位置定义：每队 5 个可配置位置，实际每波上 4 人 */
+export const SLOT_DEFS = [
+  { key: 'heal1', role: 'N', label: '常驻奶', short: '常', desc: '常驻 buff 奶：增益量要大' },
+  { key: 'heal2', role: 'N', label: '太阳奶', short: '太', desc: '小奶：能放太阳（觉醒）即可，伤害够了才会自动补上' },
+  { key: 'c1', role: 'C', label: 'C位1', short: 'C1', desc: '主力输出位' },
+  { key: 'c2', role: 'C', label: 'C位2', short: 'C2', desc: '次主力输出位' },
+  { key: 'c3', role: 'C', label: 'C位3', short: 'C3', desc: '第三输出位（伤害已经够了时会被太阳奶顶替）' },
 ]
 
-/** 「队内配置」下拉选项：自动 / 单奶 / 双奶 */
-export const LAYOUT_OPTIONS = [
-  {
-    value: 'auto',
-    label: '自动配置（推荐）',
-    short: '自动',
-    desc: '红/黄队凑不满 C 单角色区间时自动改双奶，宁可少一个位置也不上伤害过低的角色；绿队作为混子队保持单奶带满',
-  },
-  ...TEAM_LAYOUTS,
+export const SLOT_KEYS = SLOT_DEFS.map((d) => d.key)
+
+/** 每波的槽位模板 */
+export const SLOT_TEMPLATES = {
+  single: ['heal1', 'c1', 'c2', 'c3'],
+  double: ['heal1', 'heal2', 'c1', 'c2'],
+}
+
+/** 双奶策略 */
+export const HEAL_POLICIES = [
+  { value: 'auto', label: '允许双奶', short: '允许双奶', desc: 'C位1+C位2 已到位且合计达到目标时，第 4 位自动补太阳奶' },
+  { value: 'single', label: '只用单奶', short: '只用单奶', desc: '固定 1奶3C，第 4 位永远放 C位3' },
+  { value: 'double', label: '固定双奶', short: '固定双奶', desc: '固定 2奶2C，不上 C位3' },
 ]
 
-/** 双奶时两个奶位的语义（顺序与槽位一致，面板高的自动放常驻位） */
-export const HEAL_SLOT_LABELS = ['常驻奶', '太阳奶']
-
-export const STORAGE_KEY_LINEUP = 'dnf-raid-lineup-v2'
-/** 旧版（单波次）编队数据结构，用于自动迁移 */
+export const STORAGE_KEY_LINEUP = 'dnf-raid-lineup-v3'
+/** 旧版编队数据结构，用于自动迁移 */
 export const STORAGE_KEY_LINEUP_V1 = 'dnf-raid-lineup-v1'
+export const STORAGE_KEY_LINEUP_V2 = 'dnf-raid-lineup-v2'
 
 /** 一波最多排多少波（防止数据异常时爆掉） */
 export const MAX_WAVES = 30

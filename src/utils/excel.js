@@ -1,15 +1,7 @@
 import * as XLSX from 'xlsx'
-import {
-  BENCH_REASON_LABEL,
-  DIFFICULTIES,
-  EXPORT_HEADERS,
-  HEAL_SLOT_LABELS,
-  TEAMS,
-  TEAM_LAYOUTS,
-  waveName,
-} from '../constants.js'
+import { BENCH_REASON_LABEL, DIFFICULTIES, EXPORT_HEADERS, SLOT_DEFS, TEAMS, waveName } from '../constants.js'
 import { parsePanel, stamp } from './format.js'
-import { layoutSlots, teamSummary } from './lineup.js'
+import { layoutSlots, slotLabel, teamSummary } from './lineup.js'
 
 /** 一个文件里两个 sheet：角色登记 + 排表 */
 export const SHEET_ROSTER = '角色登记'
@@ -26,14 +18,32 @@ const LINEUP_HEADERS = [
   '面板数值',
   '区间状态',
   '备注',
-  '队内配置',
-  'C单角色下限',
-  'C单角色上限',
-  'C合计下限',
-  'C合计上限',
-  '奶下限',
-  '奶上限',
+  '双奶策略',
+  ...SLOT_DEFS.map((d) => d.label),
+  '伤害目标',
 ]
+
+/** 区间 -> "下限~上限"，空表示不限 */
+function rangeText(range) {
+  if (!range || (range.min === null && range.max === null)) return '不限'
+  const left = range.min === null || range.min === undefined ? '' : Number(range.min)
+  const right = range.max === null || range.max === undefined ? '' : Number(range.max)
+  return `${left}~${right}`
+}
+
+/** "下限~上限" -> { min, max } */
+function parseRangeText(text) {
+  const value = String(text ?? '').trim()
+  if (!value || value === '不限' || value === '-') return { min: null, max: null }
+  const [left, right] = value.split('~')
+  const toNumber = (t) => {
+    const text2 = String(t ?? '').trim()
+    if (!text2) return null
+    const num = Number(text2)
+    return Number.isFinite(num) ? num : null
+  }
+  return { min: toNumber(left), max: right === undefined ? null : toNumber(right) }
+}
 
 const UNDEPLOYED_LABEL = '未上场'
 
@@ -57,10 +67,6 @@ export function buildRosterSheet(characters) {
   return ws
 }
 
-function rangeCell(value) {
-  return value === null || value === undefined ? '' : Number(value)
-}
-
 export function buildLineupSheet({ waves, teamConfigs, byId, bench = [] }) {
   const aoa = [LINEUP_HEADERS]
   const configOf = (teamId) => teamConfigs.find((t) => t.id === teamId) || {}
@@ -71,27 +77,27 @@ export function buildLineupSheet({ waves, teamConfigs, byId, bench = [] }) {
       const slots = wave.teams?.[team.id] || []
       slots.forEach((slot, index) => {
         const character = slot.characterId ? byId.get(slot.characterId) : null
-        const position = slotPositionLabel(slot, index, config.layout)
         // 区间配置只在每队第一行写一次，避免整张表都是重复数值
         const first = index === 0
+        const configCells = first
+          ? [
+              policyLabel(config.healPolicy),
+              ...SLOT_DEFS.map((d) => rangeText(config.ranges?.[d.key])),
+              rangeText(config.total),
+            ]
+          : new Array(SLOT_DEFS.length + 2).fill('')
         aoa.push([
           waveName(waveIndex),
           wave.difficulty,
           team.name,
-          position,
+          slotLabel(slot.key),
           character ? character.type : slot.role,
           character ? character.player : '',
           character ? character.name : '（空位）',
           character && character.panel !== null ? Number(character.panel) : '',
           character ? (slot.outOfRange ? '区间外' : '正常') : '空位',
           '',
-          first ? layoutLabel(config.ownLayout) : '',
-          first ? rangeCell(config.cRange?.min) : '',
-          first ? rangeCell(config.cRange?.max) : '',
-          first ? rangeCell(config.cTotalRange?.min) : '',
-          first ? rangeCell(config.cTotalRange?.max) : '',
-          first ? rangeCell(config.nRange?.min) : '',
-          first ? rangeCell(config.nRange?.max) : '',
+          ...configCells,
         ])
       })
     }
@@ -136,28 +142,24 @@ export function buildLineupSheet({ waves, teamConfigs, byId, bench = [] }) {
     { wch: 10 },
     { wch: 16 },
     { wch: 12 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 10 },
-    { wch: 10 },
+    ...SLOT_DEFS.map(() => ({ wch: 16 })),
+    { wch: 16 },
   ]
   return ws
 }
 
-function slotPositionLabel(slot, index, layout) {
-  if (slot.role === 'C') return '输出C'
-  const meta = TEAM_LAYOUTS.find((l) => l.value === layout) || TEAM_LAYOUTS[0]
-  if (meta.healSlots >= 2) return HEAL_SLOT_LABELS[index] || '辅助奶'
-  return '辅助奶'
+function policyLabel(policy) {
+  if (policy === 'single') return '只用单奶'
+  if (policy === 'double') return '固定双奶'
+  return '允许双奶'
 }
 
-function layoutLabel(layout) {
-  if (!layout) return '跟随全局'
-  if (layout === 'auto') return '自动配置'
-  const meta = TEAM_LAYOUTS.find((l) => l.value === layout) || TEAM_LAYOUTS[0]
-  return `${meta.label}（${meta.short}）`
+function parsePolicy(text) {
+  const value = String(text ?? '')
+  if (value.includes('只用单奶') || value.includes('单奶')) return 'single'
+  if (value.includes('固定双奶')) return 'double'
+  if (value.includes('允许双奶') || value.includes('自动')) return 'auto'
+  return undefined
 }
 
 /**
@@ -203,13 +205,13 @@ const LINEUP_ALIASES = {
   panel: ['面板数值', '面板数据', '数值'],
   state: ['区间状态', '状态'],
   remark: ['备注', '原因', '未上场原因'],
-  layout: ['队内配置', '配置'],
-  cMin: ['c单角色下限', 'C单角色下限'],
-  cMax: ['c单角色上限', 'C单角色上限'],
-  totalMin: ['c合计下限', 'C合计下限'],
-  totalMax: ['c合计上限', 'C合计上限'],
-  nMin: ['奶下限'],
-  nMax: ['奶上限'],
+  policy: ['双奶策略', '队内配置', '配置'],
+  heal1: ['常驻奶'],
+  heal2: ['太阳奶'],
+  c1: ['c位1', 'C位1'],
+  c2: ['c位2', 'C位2'],
+  c3: ['c位3', 'C位3'],
+  total: ['伤害目标', 'c合计伤害', 'C合计伤害'],
 }
 
 function normalizeHeaderCell(value) {
@@ -353,11 +355,17 @@ export function extractLineup(rows, teamLayouts = {}) {
   if (headerRowIndex === -1) return empty
 
   const waves = new Map()
-  const config = {
-    red: { layout: null, cRange: { min: null, max: null }, cTotalRange: { min: null, max: null }, nRange: { min: null, max: null } },
-    yellow: { layout: null, cRange: { min: null, max: null }, cTotalRange: { min: null, max: null }, nRange: { min: null, max: null } },
-    green: { layout: null, cRange: { min: null, max: null }, cTotalRange: { min: null, max: null }, nRange: { min: null, max: null } },
-  }
+  const emptyRange = () => ({ min: null, max: null })
+  const config = Object.fromEntries(
+    TEAMS.map((t) => [
+      t.id,
+      {
+        healPolicy: undefined,
+        ranges: Object.fromEntries(['heal1', 'heal2', 'c1', 'c2', 'c3'].map((k) => [k, emptyRange()])),
+        total: emptyRange(),
+      },
+    ]),
+  )
   let unmatched = 0
   let undeployed = 0
 
@@ -389,22 +397,19 @@ export function extractLineup(rows, teamLayouts = {}) {
     const name = String(cellAt('name') ?? '').trim()
     wave.teams[teamId].push({ role, player, name })
 
-    // 区间配置（每队第一行才有值）
-    const layoutValue = mapLayout(cellAt('layout'))
+    // 位置区间配置（每队第一行才有值）
+    const policyValue = parsePolicy(cellAt('policy'))
     const target = config[teamId]
-    if (layoutValue !== undefined) target.layout = layoutValue
-    const setRange = (field, bound, key2) => {
-      const raw = cellAt(field)
-      if (raw === null || raw === undefined || String(raw).trim() === '') return
-      const num = Number(raw)
-      if (Number.isFinite(num)) target[key2][bound] = num
+    if (policyValue) target.healPolicy = policyValue
+    for (const key of ['heal1', 'heal2', 'c1', 'c2', 'c3']) {
+      const cell = cellAt(key)
+      if (cell === null || cell === undefined || String(cell).trim() === '') continue
+      target.ranges[key] = parseRangeText(cell)
     }
-    setRange('cMin', 'min', 'cRange')
-    setRange('cMax', 'max', 'cRange')
-    setRange('totalMin', 'min', 'cTotalRange')
-    setRange('totalMax', 'max', 'cTotalRange')
-    setRange('nMin', 'min', 'nRange')
-    setRange('nMax', 'max', 'nRange')
+    const totalCell = cellAt('total')
+    if (totalCell !== null && totalCell !== undefined && String(totalCell).trim() !== '') {
+      target.total = parseRangeText(totalCell)
+    }
   }
 
   const result = [...waves.values()]
@@ -415,9 +420,9 @@ export function extractLineup(rows, teamLayouts = {}) {
         const entries = wave.teams[team.id] || []
         const healRows = entries.filter((e) => e.role === 'N').length
         // 槽位模板按表里实际写出的位置还原（自动双奶的波次也是 2奶2C，不会丢人）
-        const rowLayout = healRows >= 2 ? '2n2c' : healRows === 1 ? '1n3c' : null
-        const configured = config[team.id].layout
-        const layout = rowLayout || (configured && configured !== 'auto' ? configured : teamLayouts[team.id] || '1n3c')
+        const rowLayout = healRows >= 2 ? 'double' : healRows === 1 ? 'single' : null
+        const configured = config[team.id].healPolicy
+        const layout = rowLayout || (configured === 'double' ? 'double' : 'single')
         const template = layoutSlots(layout)
         const slots = template.map((s, index) => {
           const sameRole = entries.filter((e) => e.role === s.role)
@@ -433,10 +438,12 @@ export function extractLineup(rows, teamLayouts = {}) {
   // 完全没有配置信息就不用覆盖现有配置
   const hasConfig = TEAMS.some(
     (t) =>
-      config[t.id].layout !== null ||
-      config[t.id].cRange.min !== null ||
-      config[t.id].nRange.min !== null ||
-      config[t.id].cTotalRange.min !== null,
+      Boolean(config[t.id].healPolicy) ||
+      ['heal1', 'heal2', 'c1', 'c2', 'c3'].some(
+        (k) => config[t.id].ranges[k].min !== null || config[t.id].ranges[k].max !== null,
+      ) ||
+      config[t.id].total.min !== null ||
+      config[t.id].total.max !== null,
   )
   return { waves: result, config: hasConfig ? config : null, unmatched, undeployed }
 }

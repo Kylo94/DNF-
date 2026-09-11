@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import WaveRow from '../components/lineup/WaveRow.vue'
 import TeamSettings from '../components/lineup/TeamSettings.vue'
 import BenchPanel from '../components/lineup/BenchPanel.vue'
-import { DIFFICULTIES, LAYOUT_OPTIONS, MAX_WAVES, RAID_SIZE, TEAMS, waveName } from '../constants.js'
+import { DIFFICULTIES, MAX_WAVES, RAID_SIZE, TEAMS, waveName } from '../constants.js'
 import { useLineup } from '../composables/useLineup.js'
 import { useToast } from '../composables/useToast.js'
 import { DISPLAY_FORMATS, characterText } from '../utils/display.js'
@@ -27,12 +27,12 @@ const {
   setWaveDifficulty,
   setDefaultDifficulty,
   setDisplayFormat,
-  setGlobalLayout,
-  setTeamLayout,
+  setHealPolicy,
   setRange,
   applySuggestedRanges,
   resetRanges,
   transfer,
+  toggleTeamLayout,
   swapHealSlots,
 } = useLineup()
 const { toast } = useToast()
@@ -69,11 +69,13 @@ const waveWarnCount = computed(() => {
 
 const sortedWarnings = computed(() => {
   const rank = { error: 0, warn: 1, info: 2 }
-  return [...warnings.value].sort((a, b) => rank[a.level] - rank[b.level])
+  // 先按波次排（要打的波在前面），同波内按严重程度
+  return [...warnings.value].sort(
+    (a, b) => (a.waveIndex ?? 0) - (b.waveIndex ?? 0) || rank[a.level] - rank[b.level],
+  )
 })
 
 const errorCount = computed(() => warnings.value.filter((w) => w.level === 'error').length)
-const layoutMeta = computed(() => LAYOUT_OPTIONS.find((l) => l.value === state.globalLayout))
 const overallLabel = computed(
   () => `已排 ${overallStats.value.used} / ${overallStats.value.totalCharacters} 人 · 共 ${overallStats.value.waves} 波`,
 )
@@ -129,12 +131,6 @@ function handleClearAll() {
   clearAllWaves()
   selected.value = null
   toast('已清空全部波次', 'warn')
-}
-
-function handleGlobalLayout(value) {
-  if (state.globalLayout === value) return
-  setGlobalLayout(value)
-  toast(`全局配置切换为 ${LAYOUT_OPTIONS.find((l) => l.value === value)?.short}`, 'info')
 }
 
 /* ------------------------- 单波操作 ------------------------- */
@@ -231,6 +227,11 @@ function removeSlotAt(waveIndex, teamId, index) {
   if (result.message) toast(result.message, result.ok ? 'success' : 'error')
 }
 
+function handleToggleLayout(waveIndex, teamId) {
+  const result = toggleTeamLayout(waveIndex, teamId)
+  if (result.message) toast(result.message, 'info')
+}
+
 function handleSwapHeals(teamId) {
   const waveIndex = state.waves.findIndex((wave) => {
     const heals = (wave.teams[teamId] || []).filter((s) => s.role === 'N')
@@ -265,20 +266,6 @@ function handleSwapHeals(teamId) {
         </div>
       </div>
 
-      <div class="bar__group">
-        <span class="bar__label">全局队伍配置</span>
-        <select
-          class="bar__select"
-          data-testid="select-global-layout"
-          :value="state.globalLayout"
-          @change="handleGlobalLayout($event.target.value)"
-        >
-          <option v-for="l in LAYOUT_OPTIONS" :key="l.value" :value="l.value" :title="l.desc">
-            {{ l.label }}（{{ l.short }}）
-          </option>
-        </select>
-      </div>
-
       <div class="bar__group bar__group--actions">
         <button class="btn btn--primary" data-testid="btn-assign" @click="runAssignAll">一键排完全部波次</button>
         <button class="btn" data-testid="btn-add-wave" :disabled="state.waves.length >= MAX_WAVES" @click="handleAddWave">
@@ -298,7 +285,7 @@ function handleSwapHeals(teamId) {
         <span class="status" data-testid="overall-count">{{ overallLabel }}</span>
         <span class="muted">{{ assignedAtLabel }}</span>
         <span v-if="state.configDirty" class="status status--warn" data-testid="config-dirty">配置已变更，建议重新排波</span>
-        <span v-if="layoutMeta" class="muted">每队 {{ layoutMeta.short }}</span>
+        <span class="muted">严格按位置区间匹配 · 双奶按伤害目标自动补</span>
       </div>
 
       <div class="bar__format">
@@ -328,9 +315,9 @@ function handleSwapHeals(teamId) {
       :global-layout="state.globalLayout"
       :pool-stats="defaultPoolStats"
       :difficulty="state.defaultDifficulty"
-      @team-layout="setTeamLayout"
+      @heal-policy="setHealPolicy"
       @range="setRange"
-      @auto-band="applySuggestedRanges(); toast('已按当前难度角色池自动分档（含合计伤害目标），可手动微调', 'success')"
+      @auto-band="applySuggestedRanges(); toast('已按当前角色池填了一版位置门槛，可手动微调', 'success')"
       @reset-ranges="resetRanges(); toast('已清空区间配置', 'info')"
     />
 
@@ -352,13 +339,13 @@ function handleSwapHeals(teamId) {
 
       <div v-if="showWarnings" class="warns" data-testid="lineup-warnings">
         <ul v-if="sortedWarnings.length">
-          <li v-for="(w, i) in sortedWarnings.slice(0, 20)" :key="i" :class="`lv-${w.level}`">
+          <li v-for="(w, i) in sortedWarnings.slice(0, 30)" :key="i" :class="`lv-${w.level}`">
             <span class="lv-tag">{{ w.level === 'error' ? '必须处理' : w.level === 'warn' ? '注意' : '提示' }}</span>
             {{ w.message }}
           </li>
         </ul>
         <p v-else class="muted">没有发现问题：每队都有奶、没有空位、合计伤害在目标范围内。</p>
-        <p v-if="sortedWarnings.length > 20" class="muted">还有 {{ sortedWarnings.length - 20 }} 条…</p>
+        <p v-if="sortedWarnings.length > 30" class="muted">还有 {{ sortedWarnings.length - 30 }} 条…</p>
       </div>
 
       <div v-if="!overallStats.totalCharacters" class="empty-state">
@@ -391,6 +378,7 @@ function handleSwapHeals(teamId) {
           @drag-end="onDragEnd"
           @remove-slot="removeSlotAt"
           @swap-heals="handleSwapHeals"
+          @toggle-layout="handleToggleLayout"
           @change-difficulty="handleWaveDifficulty"
           @reassign="handleReassign"
           @remove-wave="handleRemoveWave"

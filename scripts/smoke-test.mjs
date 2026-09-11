@@ -29,6 +29,11 @@ const CANDIDATES = [
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
 ].filter(Boolean)
 
+if (!fs.existsSync(SAMPLE)) {
+  console.error(`缺少案例文件 ${SAMPLE}（可用 git checkout -- 薄纱团本角色数据.xlsx 恢复）`)
+  process.exit(2)
+}
+
 const executablePath = CANDIDATES.find((p) => fs.existsSync(p))
 if (!executablePath) {
   console.error('未找到可用的 Chromium 内核浏览器，请设置 CHROME_PATH 环境变量')
@@ -67,6 +72,7 @@ page.on('dialog', async (d) => {
 })
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const selText = (selector) => page.$eval(selector, (el) => el.innerText)
 const text = () => page.$eval('body', (el) => el.innerText)
 const store = () => page.evaluate(() => JSON.parse(localStorage.getItem('dnf-raid-roster-v1') || '[]'))
 const statCards = () => page.$$eval('.stat__value', (els) => els.map((e) => e.textContent.trim()))
@@ -239,7 +245,6 @@ ok('删除单条登记', after === before - 1 && dialogLog.some((d) => d.include
 
 /* ================= 登记页交互：编辑不滚动 + 按玩家折叠 ================= */
 {
-  const selText = (selector) => page.$eval(selector, (el) => el.innerText)
   // 滚到列表中部，点编辑按钮，页面不应该跳回顶部
   await page.evaluate(() => window.scrollTo(0, 900))
   await sleep(300)
@@ -290,7 +295,7 @@ ok('删除单条登记', after === before - 1 && dialogLog.some((d) => d.include
 }
 
 /* ================= 编队排表（多波次一行一波 + 显示格式 + 合计伤害） ================= */
-const LINEUP_KEY = 'dnf-raid-lineup-v2'
+const LINEUP_KEY = 'dnf-raid-lineup-v3'
 const readLineup = () => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || 'null'), LINEUP_KEY)
 const readRoster = () => page.evaluate(() => JSON.parse(localStorage.getItem('dnf-raid-roster-v1') || '[]'))
 const rosterByIdOf = (roster) => new Map(roster.map((c) => [c.id, c]))
@@ -371,11 +376,16 @@ ok(
   ['red', 'yellow', 'green'].every((id) => lineup.waves[0].teams[id].some((s) => s.role === 'N' && s.characterId)),
 )
 
-// --- 自动配置（混子玩法）---
+// --- 双奶策略默认值 ---
+const policies = await page.evaluate(() => ({
+  red: document.querySelector('[data-testid="policy-red"]').value,
+  yellow: document.querySelector('[data-testid="policy-yellow"]').value,
+  green: document.querySelector('[data-testid="policy-green"]').value,
+}))
 ok(
-  '全局配置默认为「自动」',
-  (await page.$eval('[data-testid="select-global-layout"]', (el) => el.value)) === 'auto',
-  await page.$eval('[data-testid="select-global-layout"]', (el) => el.value),
+  '默认策略：红/黄允许双奶，绿队只用单奶（混子队）',
+  policies.red === 'auto' && policies.yellow === 'auto' && policies.green === 'single',
+  JSON.stringify(policies),
 )
 // 先按当前角色池自动分档（红/黄/绿各自一个区间），再重排，才能看出"自动双奶"
 await page.click('[data-testid="btn-auto-band"]')
@@ -403,45 +413,63 @@ if (autoDoubleHeal.length) {
   ok('页面用「2奶2C·自动」标出该队', (await uiText(`[data-testid="wave-row-${waveIndex}"]`)).includes('自动'), `第 ${waveIndex + 1} 行`)
 }
 
-// --- 合计伤害目标（先把红队固定成单奶、清掉 C 单角色区间，专测组合搜索）---
-await page.select('[data-testid="layout-red"]', '1n3c')
-await setRange('red', 'C', 'min', '')
-await setRange('red', 'C', 'max', '')
+// --- 伤害目标控制双奶 + 严格匹配 ---
+// 先把红队门槛放宽到"只要是角色就行"，再单独验证伤害目标的作用
+for (const key of ['c1', 'c2', 'c3', 'heal1', 'heal2']) await setRange('red', key, 'min', 1)
+await page.select('[data-testid="policy-red"]', 'single')
 await sleep(300)
 await page.click('[data-testid="btn-assign-wave-0"]')
-await sleep(700)
+await sleep(800)
 lineup = await readLineup()
-const redTotalBefore = lineup.waves[0].teams.red
-  .filter((s) => s.role === 'C' && s.characterId)
-  .reduce((sum, s) => sum + rosterById.get(s.characterId).panel, 0)
-await setRange('red', 'TOTAL', 'min', Math.round(redTotalBefore * 0.7))
-await setRange('red', 'TOTAL', 'max', redTotalBefore)
-await page.click('[data-testid="btn-assign-wave-0"]')
-await sleep(700)
-lineup = await readLineup()
-const redTotalAfter = lineup.waves[0].teams.red
-  .filter((s) => s.role === 'C' && s.characterId)
-  .reduce((sum, s) => sum + rosterById.get(s.characterId).panel, 0)
 ok(
-  `红队 C 合计落在合计目标内（${Math.round(redTotalBefore * 0.7)} ~ ${redTotalBefore}）`,
-  redTotalAfter >= Math.round(redTotalBefore * 0.7) && redTotalAfter <= redTotalBefore,
-  String(redTotalAfter),
+  '只用单奶 → 红队 1奶3C',
+  lineup.waves[0].teams.red.filter((s) => s.role === 'N').length === 1 &&
+    lineup.waves[0].teams.red.filter((s) => s.role === 'C').length === 3,
+  lineup.waves[0].teams.red.map((s) => s.key).join(','),
 )
-await setRange('red', 'TOTAL', 'min', 1000)
-await setRange('red', 'TOTAL', 'max', Math.round(redTotalBefore * 0.5))
-await page.click('[data-testid="btn-assign-wave-0"]')
-await sleep(700)
-lineup = await readLineup()
-const redTotalLow = lineup.waves[0].teams.red
-  .filter((s) => s.role === 'C' && s.characterId)
-  .reduce((sum, s) => sum + rosterById.get(s.characterId).panel, 0)
-ok('合计上限压低后不会再堆最强 C（伤害不过剩）', redTotalLow <= Math.round(redTotalBefore * 0.5), String(redTotalLow))
-await setRange('red', 'TOTAL', 'min', '')
-await setRange('red', 'TOTAL', 'max', '')
-await page.select('[data-testid="layout-red"]', 'global')
+
+await page.select('[data-testid="policy-red"]', 'auto')
+await setRange('red', 'total', 'min', 1)
 await sleep(300)
 await page.click('[data-testid="btn-assign-wave-0"]')
-await sleep(600)
+await sleep(800)
+lineup = await readLineup()
+ok(
+  'C1+C2 达到伤害目标 → 第 4 位自动补太阳奶（双奶）',
+  lineup.waves[0].teams.red.filter((s) => s.role === 'N').length === 2 &&
+    lineup.waves[0].teams.red.some((s) => s.key === 'heal2' && s.characterId),
+  lineup.waves[0].teams.red.map((s) => `${s.key}:${s.characterId ? '有' : '空'}`).join(' '),
+)
+ok('双奶时不再放 C位3', !lineup.waves[0].teams.red.some((s) => s.key === 'c3'))
+
+// 严格匹配：把 C位1 门槛抬到没人能达到 → 该位置留空，而不是塞区间外的角色
+await setRange('red', 'c1', 'min', 999999999)
+await page.click('[data-testid="btn-assign-wave-0"]')
+await sleep(800)
+lineup = await readLineup()
+const redC1 = lineup.waves[0].teams.red.find((s) => s.key === 'c1')
+ok('区间内没人 → C位1 留空（严格匹配，不硬塞）', redC1.characterId === null, JSON.stringify(redC1))
+ok(
+  '红队里没有区间外的角色（都是严格匹配进来的）',
+  lineup.waves[0].teams.red.every((s) => !s.outOfRange),
+)
+ok(
+  '编队检查会点名缺失的位置',
+  (await page.$eval('[data-testid="btn-toggle-warnings"]', (el) => el.innerText)).includes('编队检查'),
+)
+await page.click('[data-testid="btn-toggle-warnings"]')
+await sleep(300)
+ok(
+  '检查面板提示 C位1 没有符合区间的角色',
+  (await selText('[data-testid="lineup-warnings"]')).includes('C位1'),
+  (await selText('[data-testid="lineup-warnings"]')).slice(0, 90).replace(/\n/g, ' | '),
+)
+await page.click('[data-testid="btn-toggle-warnings"]')
+await sleep(200)
+await setRange('red', 'c1', 'min', '')
+await setRange('red', 'total', 'min', '')
+await page.select('[data-testid="policy-red"]', 'auto')
+await sleep(300)
 
 // --- 显示格式标签 ---
 ok('显示格式标签共 5 种', (await page.$$eval('[data-testid="format-tags"] .tag-btn', (els) => els.length)) === 5)
@@ -492,16 +520,20 @@ ok('空位显示空位提示', (await uiText(slotSel(0, 'red', firstSlotIndex)))
 const benchCountBefore = await page.$$eval('[data-testid="bench-chip"]', (els) => els.length)
 const removedPlayer = rosterById.get(removedId).player
 await page.evaluate((player) => {
-  const chip = [...document.querySelectorAll('[data-testid="bench-chip"]')].find((c) => c.dataset.player === player)
+  // 候补里同一个玩家可能有奶也有 C，这里要挑和目标位置同类型的
+  const chip = [...document.querySelectorAll('[data-testid="bench-chip"]')].find(
+    (c) => c.dataset.player === player && c.dataset.type === 'C',
+  )
   if (chip) chip.click()
 }, removedPlayer)
 await page.click(slotSel(0, 'red', firstSlotIndex))
 await sleep(500)
 lineup = await readLineup()
+const benchAfter = await page.$$eval('[data-testid="bench-chip"]', (els) => els.length)
 ok(
   '候补角色可以手动补进空位',
-  lineup.waves[0].teams.red[firstSlotIndex].characterId !== null &&
-    (await page.$$eval('[data-testid="bench-chip"]', (els) => els.length)) === benchCountBefore - 1,
+  lineup.waves[0].teams.red[firstSlotIndex].characterId !== null && benchAfter === benchCountBefore - 1,
+  `slot=${lineup.waves[0].teams.red[firstSlotIndex].characterId ? '有' : '空'} 候补 ${benchCountBefore} → ${benchAfter} 玩家=${removedPlayer}`,
 )
 
 // --- 跨波次移动（新增一个空波次，把角色挪过去） ---
