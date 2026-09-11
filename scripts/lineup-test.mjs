@@ -4,7 +4,9 @@
  */
 import {
   autoAssign,
+  chooseCombination,
   computeBench,
+  computeWavesNeeded,
   layoutSlots,
   suggestRanges,
   teamSummary,
@@ -37,13 +39,14 @@ const ch = (id, player, name, type, panel, difficulty = '普通团') => ({
 
 const range = (min, max = null) => ({ min, max })
 
-function makeConfig({ globalLayout = '1n3c', ranges = {}, layouts = {} } = {}) {
+function makeConfig({ globalLayout = '1n3c', ranges = {}, layouts = {}, totals = {} } = {}) {
   return {
     globalLayout,
     teams: TEAMS.map((t) => ({
       id: t.id,
       layout: layouts[t.id] ?? null,
       cRange: ranges[t.id]?.c ?? range(null),
+      cTotalRange: totals[t.id] ?? range(null),
       nRange: ranges[t.id]?.n ?? range(null),
     })),
   }
@@ -104,7 +107,7 @@ console.log('=== 1. 单奶配置：区间分档 ===')
   ok('三个奶按分档落位：红60000 / 黄45000 / 绿30000', JSON.stringify(healPanels) === JSON.stringify([60000, 45000, 30000]), healPanels.join(','))
   ok('每队 1 奶 3C', TEAMS.every((t) => slots[t.id].filter((s) => s.role === 'N').length === 1))
 
-  const bench = computeBench(pool, slots)
+  const bench = computeBench(pool, [{ teams: slots }], 0, new Map(pool.map((c) => [c.id, c])))
   ok('未上场 3 人（多余的 C）', bench.length === 3, bench.map((b) => b.character.name).join(','))
   ok('未上场原因标记为未入选', bench.every((b) => b.reason === 'not-selected'))
 }
@@ -159,7 +162,7 @@ console.log('\n=== 3. 同一个玩家只能上场一个角色 ===')
     assigned.filter((a) => a.character.player === '老陈').map((a) => a.character.name).join(',') === '奶萝',
     assigned.filter((a) => a.character.player === '老陈').map((a) => a.character.name).join(','),
   )
-  const bench = computeBench(pool, slots)
+  const bench = computeBench(pool, [{ teams: slots }], 0, new Map(pool.map((c) => [c.id, c])))
   const conflict = bench.filter((b) => b.reason === 'player-conflict')
   ok(
     '同玩家的其余角色进入候补并标注原因',
@@ -247,6 +250,125 @@ console.log('\n=== 6. 自动分档与统计 ===')
   const summary = teamSummary(slots.red, byId)
   ok('红队合计伤害 = 各 C 之和', summary.cTotal === 9000 + 8000 + 7000, String(summary.cTotal))
   ok('红队奶均 = 60000', summary.nAverage === 60000, String(summary.nAverage))
+}
+
+
+/* ------------------------------------------------------------------ */
+console.log('\n=== 7. 合计伤害目标：只要总和到了就行，避免伤害过剩 ===')
+{
+  const pool = [
+    ch('c1', 'p1', 'C1', 'C', 10000),
+    ch('c2', 'p2', 'C2', 'C', 8000),
+    ch('c3', 'p3', 'C3', 'C', 6000),
+    ch('c4', 'p4', 'C4', 'C', 5000),
+    ch('c5', 'p5', 'C5', 'C', 4000),
+    ch('c6', 'p6', 'C6', 'C', 3000),
+    ch('c7', 'p7', 'C7', 'C', 2000),
+  ]
+
+  // 不给合计目标：仍然挑最强的三个
+  const topCombo = chooseCombination(pool, 3, range(null))
+  ok(
+    '不设合计目标时取最强三连（10000+8000+6000）',
+    topCombo.reduce((s, c) => s + c.panel, 0) === 24000,
+    String(topCombo.reduce((s, c) => s + c.panel, 0)),
+  )
+
+  // 给合计目标 [15000, 17000]：不能出现 24000 这种过剩
+  const fit = chooseCombination(pool, 3, range(15000, 17000))
+  const fitSum = fit.reduce((s, c) => s + c.panel, 0)
+  ok('设了合计目标后总和落在区间内', fitSum >= 15000 && fitSum <= 17000, String(fitSum))
+  ok('设了合计目标后不会拿最强三连（不是 24000）', fitSum < 24000, String(fitSum))
+
+  // 整队分配：红队合计目标达标，且不空位
+  const config = makeConfig({
+    ranges: { red: { c: range(2000) } },
+    totals: { red: range(15000, 17000) },
+  })
+  const { slots } = autoAssign(pool, config)
+  const redSum = slots.red
+    .filter((s) => s.role === 'C' && s.characterId)
+    .reduce((sum, s) => sum + pool.find((c) => c.id === s.characterId).panel, 0)
+  ok('红队 C 合计命中目标区间', redSum >= 15000 && redSum <= 17000, String(redSum))
+  ok('红队 3 个 C 位依然填满（不空位）', slots.red.filter((s) => s.role === 'C' && s.characterId).length === 3)
+
+  // 合计超出上限时给出「伤害过剩」提示
+  const warnings = validateLineup({
+    slots,
+    teams: TEAMS,
+    byId: new Map(pool.map((c) => [c.id, c])),
+    difficulty: '普通团',
+    waves: [{ teams: slots, difficulty: '普通团', teamConfig: { red: { cTotalRange: range(1000, 5000) } } }],
+  })
+  ok(
+    '合计超出上限会提示伤害过剩',
+    warnings.some((w) => w.message.includes('超出合计上限')),
+    warnings.filter((w) => w.message.includes('合计')).map((w) => w.message).join(' / '),
+  )
+}
+
+/* ------------------------------------------------------------------ */
+console.log('\n=== 8. 波次数量与多波候补 ===')
+{
+  const pool = [
+    ...Array.from({ length: 20 }, (_, i) => ch(`c${i}`, `pc${i}`, `C${i}`, 'C', 5000 - i * 10)),
+    ...Array.from({ length: 5 }, (_, i) => ch(`n${i}`, `pn${i}`, `N${i}`, 'N', 40000 - i * 100)),
+  ]
+  const config = makeConfig()
+  ok('20 个 C + 5 个奶（单奶）= 3 波', computeWavesNeeded(pool, config) === 3, String(computeWavesNeeded(pool, config)))
+  ok('双奶配置：每波 6 个 C 位，20 个 C = 4 波', computeWavesNeeded(pool, makeConfig({ globalLayout: '2n2c' })) === 4)
+  ok('空池至少 1 波', computeWavesNeeded([], config) === 1)
+
+  // 多波候选：第一波上场的角色不应该再出现在候补里
+  const byId = new Map(pool.map((c) => [c.id, c]))
+  const used = new Set(pool.slice(0, 12).map((c) => c.id))
+  // 12 个 id 依次放进红/黄/绿三队（每队 4 个）
+  const slotsOf = (ids) => {
+    const teams = {}
+    TEAMS.forEach((team, teamIndex) => {
+      teams[team.id] = layoutSlots('1n3c').map((s, i) => ({
+        role: s.role,
+        characterId: ids[teamIndex * 4 + i] ?? null,
+        outOfRange: false,
+      }))
+    })
+    return teams
+  }
+  const waves = [
+    { teams: slotsOf([...used]) },
+    { teams: slotsOf([]) },
+  ]
+  const bench = computeBench(pool, waves, 1, byId)
+  ok('已上场的角色不会出现在候补区', bench.every((b) => !used.has(b.character.id)), `候补 ${bench.length} 人`)
+  ok('未上场的角色都在候补区', bench.length === pool.length - used.size, `${bench.length} / ${pool.length - used.size}`)
+}
+
+/* ------------------------------------------------------------------ */
+console.log('\n=== 9. 自动分档同时给出合计伤害目标 ===')
+{
+  const pool = [
+    ...Array.from({ length: 9 }, (_, i) => ch(`c${i}`, `pc${i}`, `C${i}`, 'C', 9000 - i * 1000)),
+    ...Array.from({ length: 3 }, (_, i) => ch(`n${i}`, `pn${i}`, `N${i}`, 'N', 60000 - i * 10000)),
+  ]
+  const suggested = suggestRanges(pool, '1n3c')
+  ok('自动分档给出红队合计目标 24000（9000+8000+7000）', suggested.red.cTotalRange.min === 24000, JSON.stringify(suggested.red.cTotalRange))
+  ok('合计上限留 20% 余量 = 28800', suggested.red.cTotalRange.max === 28800, String(suggested.red.cTotalRange.max))
+  ok('黄队合计目标 15000', suggested.yellow.cTotalRange.min === 15000, String(suggested.yellow.cTotalRange.min))
+
+  const { slots } = autoAssign(pool, {
+    globalLayout: '1n3c',
+    teams: TEAMS.map((t) => ({ id: t.id, layout: null, ...suggested[t.id] })),
+  })
+  const byId = new Map(pool.map((c) => [c.id, c]))
+  const assigned = assignedCharacters(slots, pool)
+  ok('按自动分档排完 12 人且无区间外', assigned.length === 12 && assigned.every((a) => !a.slot.outOfRange))
+  for (const t of TEAMS) {
+    const summary = teamSummary(slots[t.id], byId, suggested[t.id].cTotalRange)
+    ok(
+      `${t.name}合计达标（${summary.cTotal} ∈ ${summary.cTarget.min}~${summary.cTarget.max}）`,
+      summary.cTargetReady && !summary.cUnder && !summary.cOver,
+    )
+  }
 }
 
 console.log(`\n结果：${pass}/${pass + failures.length} 通过`)

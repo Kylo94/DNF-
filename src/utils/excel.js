@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx'
-import { EXPORT_HEADERS, DIFFICULTIES, HEAL_SLOT_LABELS, BENCH_REASON_LABEL } from '../constants.js'
+import { EXPORT_HEADERS, DIFFICULTIES, HEAL_SLOT_LABELS, BENCH_REASON_LABEL, waveName } from '../constants.js'
 import { parsePanel, stamp } from './format.js'
+import { teamSummary } from './lineup.js'
 
 /* ------------------------------------------------------------------ *
  * 导出
@@ -63,23 +64,46 @@ function slotPositionLabel(slot, index, layout) {
   return '辅助奶'
 }
 
-export function exportLineupToExcel({ difficulty, teamConfigs, slotsMap, byId, bench = [] }) {
-  const rows = [['队伍', '位置', '角色类型', '归属玩家', '角色称呼', '面板数值', '区间状态']]
-  for (const team of teamConfigs) {
-    const slots = slotsMap[team.id] || []
-    slots.forEach((slot, index) => {
-      const character = slot.characterId ? byId.get(slot.characterId) : null
-      rows.push([
+/**
+ * 导出全部波次的编队
+ * @param {{waves:Array, teamConfigs:Array, byId:Map, bench:Array, difficulty:string}} payload
+ */
+export function exportLineupToExcel({ waves, teamConfigs, byId, bench = [], difficulty = '' }) {
+  const rows = [['波次', '团本难度', '队伍', '位置', '角色类型', '归属玩家', '角色称呼', '面板数值', '区间状态']]
+  const summaryRows = [['波次', '队伍', '上场人数', 'C 合计伤害', 'C 目标下限', 'C 目标上限', '合计状态', '奶均面板', '区间外人数']]
+
+  waves.forEach((wave, waveIndex) => {
+    for (const team of teamConfigs) {
+      const slots = wave.teams?.[team.id] || []
+      slots.forEach((slot, index) => {
+        const character = slot.characterId ? byId.get(slot.characterId) : null
+        rows.push([
+          waveName(waveIndex),
+          wave.difficulty,
+          team.name,
+          slotPositionLabel(slot, index, team.layout),
+          character ? character.type : slot.role,
+          character ? character.player : '',
+          character ? character.name : '（空位）',
+          character && character.panel !== null ? Number(character.panel) : '',
+          character ? (slot.outOfRange ? '区间外' : '正常') : '空位',
+        ])
+      })
+
+      const summary = teamSummary(slots, byId, team.cTotalRange)
+      summaryRows.push([
+        waveName(waveIndex),
         team.name,
-        slotPositionLabel(slot, index, team.layout),
-        character ? character.type : slot.role,
-        character ? character.player : '',
-        character ? character.name : '（空位）',
-        character && character.panel !== null ? Number(character.panel) : '',
-        character ? (slot.outOfRange ? '区间外' : '正常') : '空位',
+        `${summary.filled}/${summary.total}`,
+        summary.cTotal,
+        summary.cTarget.min === null ? '' : summary.cTarget.min,
+        summary.cTarget.max === null ? '' : summary.cTarget.max,
+        summary.cTargetReady ? (summary.cUnder ? '低于合计下限' : summary.cOver ? '超出上限（伤害过剩）' : '合计达标') : '未设合计目标',
+        summary.nAverage || '',
+        summary.outOfRange,
       ])
-    })
-  }
+    }
+  })
 
   const benchRows = [['归属玩家', '角色称呼', '角色类型', '面板数值', '难度类型', '未上场原因']]
   for (const item of bench) {
@@ -95,8 +119,32 @@ export function exportLineupToExcel({ difficulty, teamConfigs, slotsMap, byId, b
 
   const wb = XLSX.utils.book_new()
   const sheet = XLSX.utils.aoa_to_sheet(rows)
-  sheet['!cols'] = [{ wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 18 }, { wch: 12 }, { wch: 10 }]
+  sheet['!cols'] = [
+    { wch: 8 },
+    { wch: 10 },
+    { wch: 8 },
+    { wch: 10 },
+    { wch: 10 },
+    { wch: 14 },
+    { wch: 18 },
+    { wch: 12 },
+    { wch: 10 },
+  ]
   XLSX.utils.book_append_sheet(wb, sheet, '编队')
+
+  const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows)
+  summarySheet['!cols'] = [
+    { wch: 8 },
+    { wch: 8 },
+    { wch: 10 },
+    { wch: 14 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 18 },
+    { wch: 12 },
+    { wch: 12 },
+  ]
+  XLSX.utils.book_append_sheet(wb, summarySheet, '各队合计')
 
   if (benchRows.length > 1) {
     const benchSheet = XLSX.utils.aoa_to_sheet(benchRows)
@@ -104,7 +152,7 @@ export function exportLineupToExcel({ difficulty, teamConfigs, slotsMap, byId, b
     XLSX.utils.book_append_sheet(wb, benchSheet, '未上场')
   }
 
-  const filename = `DNF打团编队_${difficulty}_${stamp()}.xlsx`
+  const filename = `DNF打团编队_${difficulty || '全部'}_${waves.length}波_${stamp()}.xlsx`
   XLSX.writeFile(wb, filename, { compression: true })
   return filename
 }

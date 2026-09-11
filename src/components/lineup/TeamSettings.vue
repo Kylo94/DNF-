@@ -6,6 +6,7 @@ const props = defineProps({
   teamConfigs: { type: Array, default: () => [] },
   globalLayout: { type: String, default: '1n3c' },
   poolStats: { type: Object, default: () => ({ total: 0, c: 0, n: 0 }) },
+  difficulty: { type: String, default: '' },
 })
 
 const emit = defineEmits(['team-layout', 'range', 'auto-band', 'reset-ranges'])
@@ -35,11 +36,12 @@ function onLayoutChange(teamId, event) {
       <div>
         <h2>队伍统一配置</h2>
         <p class="muted">
-          给每个队伍设定 C 伤害区间与奶增益区间，分配时优先从区间内取人；区间内没人就用剩余角色兜底补位，尽量不留空位。
+          三队统一生效、所有波次共用。<strong>C 单角色区间</strong>是准入档位，<strong>C 合计伤害</strong>是整队目标：
+          总和达标即可，优先挑「刚好凑够」的角色，避免强 C 堆在一队造成伤害过剩。区间内没人时用剩余角色兜底补位并标记区间外。
         </p>
       </div>
       <div class="settings__actions">
-        <button class="btn btn--tiny" @click="emit('auto-band')">按当前角色自动分档</button>
+        <button class="btn btn--tiny" data-testid="btn-auto-band" @click="emit('auto-band')">按当前角色自动分档</button>
         <button class="btn btn--tiny btn--ghost" @click="emit('reset-ranges')">清空区间</button>
       </div>
     </header>
@@ -64,7 +66,7 @@ function onLayoutChange(teamId, event) {
         </label>
 
         <label class="cell">
-          <span class="cell__label">C 伤害区间</span>
+          <span class="cell__label">C 单角色区间</span>
           <span class="range">
             <input
               type="number"
@@ -80,6 +82,27 @@ function onLayoutChange(teamId, event) {
               :data-testid="`range-${team.id}-C-max`"
               :value="team.cRange.max ?? ''"
               @input="onRangeInput(team.id, 'C', 'max', $event)"
+            />
+          </span>
+        </label>
+
+        <label class="cell cell--total">
+          <span class="cell__label">C 合计伤害（总和目标）</span>
+          <span class="range">
+            <input
+              type="number"
+              placeholder="最低"
+              :data-testid="`range-${team.id}-TOTAL-min`"
+              :value="team.cTotalRange.min ?? ''"
+              @input="onRangeInput(team.id, 'TOTAL', 'min', $event)"
+            />
+            <em>~</em>
+            <input
+              type="number"
+              placeholder="不限"
+              :data-testid="`range-${team.id}-TOTAL-max`"
+              :value="team.cTotalRange.max ?? ''"
+              @input="onRangeInput(team.id, 'TOTAL', 'max', $event)"
             />
           </span>
         </label>
@@ -108,7 +131,8 @@ function onLayoutChange(teamId, event) {
     </div>
 
     <p class="settings__foot">
-      当前角色池：输出C {{ poolStats.c }} 个 · 辅助奶 {{ poolStats.n }} 个。填「最低」不填「最高」表示上不封顶；两个都空表示不限。
+      当前波次角色池（{{ difficulty }}）：输出C {{ poolStats.c }} 个 · 辅助奶 {{ poolStats.n }} 个。填「最低」不填「最高」表示上不封顶；
+      两个都空表示不限。合计伤害只统计该队 C 的伤害总和。
     </p>
   </section>
 </template>
@@ -130,10 +154,14 @@ function onLayoutChange(teamId, event) {
 
 .muted {
   margin: 0;
-  max-width: 720px;
+  max-width: 880px;
   font-size: 12.5px;
   line-height: 1.7;
   color: var(--text-dim);
+}
+
+.muted strong {
+  color: var(--text-soft);
 }
 
 .settings__actions {
@@ -149,7 +177,7 @@ function onLayoutChange(teamId, event) {
 
 .row {
   display: grid;
-  grid-template-columns: 110px minmax(190px, 1fr) minmax(200px, 1.2fr) minmax(200px, 1.2fr);
+  grid-template-columns: 92px minmax(168px, 0.9fr) minmax(178px, 1.1fr) minmax(196px, 1.2fr) minmax(178px, 1.1fr);
   gap: 12px;
   align-items: center;
   padding: 10px 12px;
@@ -188,6 +216,10 @@ function onLayoutChange(teamId, event) {
   color: var(--text-dim);
 }
 
+.cell--total .cell__label {
+  color: var(--accent);
+}
+
 select,
 input {
   padding: 7px 9px;
@@ -198,6 +230,10 @@ input {
   font-size: 13px;
   outline: none;
   width: 100%;
+}
+
+.cell--total input {
+  border-color: rgba(240, 198, 116, 0.35);
 }
 
 select:focus,
@@ -222,7 +258,7 @@ input:focus {
   color: var(--text-dim);
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1300px) {
   .row {
     grid-template-columns: 1fr 1fr;
   }

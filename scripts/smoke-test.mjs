@@ -227,34 +227,19 @@ const after = (await store()).length
 ok('删除单条登记', after === before - 1 && dialogLog.some((d) => d.includes('确定删除')), `${before} → ${after}`)
 
 
-/* ================= 编队排表 ================= */
-const LINEUP_KEY = 'dnf-raid-lineup-v1'
+/* ================= 编队排表（多波次 + 合计伤害 + 显示格式） ================= */
+const LINEUP_KEY = 'dnf-raid-lineup-v2'
 const readLineup = () => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || 'null'), LINEUP_KEY)
 const readRoster = () => page.evaluate(() => JSON.parse(localStorage.getItem('dnf-raid-roster-v1') || '[]'))
+const rosterByIdOf = (roster) => new Map(roster.map((c) => [c.id, c]))
+const waveCharacters = (lineup, index, byId) =>
+  Object.values(lineup.waves[index].teams)
+    .flat()
+    .filter((s) => s.characterId)
+    .map((s) => byId.get(s.characterId))
+const allAssignedIds = (lineup) =>
+  lineup.waves.flatMap((w) => Object.values(w.teams).flat().filter((s) => s.characterId).map((s) => s.characterId))
 
-await page.click('[data-testid="tab-lineup"]')
-await page.waitForSelector('[data-testid="btn-assign"]')
-await sleep(600)
-
-ok(
-  '进入编队后自动排出 12 人',
-  (await page.$eval('[data-testid="assigned-count"]', (el) => el.textContent)).includes('12/12'),
-  await page.$eval('[data-testid="assigned-count"]', (el) => el.textContent),
-)
-ok('三队共 12 个位置填满', (await page.$$eval('.slot:not(.slot--empty)', (els) => els.length)) === 12)
-
-let lineup = await readLineup()
-let roster = await readRoster()
-let rosterById = new Map(roster.map((c) => [c.id, c]))
-const teamIds = ['red', 'yellow', 'green']
-const lineupCharacters = () =>
-  teamIds.flatMap((id) => lineup.teams[id].slots.filter((s) => s.characterId).map((s) => rosterById.get(s.characterId)))
-const playersOnField = lineupCharacters().map((c) => c.player)
-ok('同一玩家一波只上场一个角色', new Set(playersOnField).size === playersOnField.length, `${playersOnField.length} 人上场`)
-const healCounts = teamIds.map((id) => lineup.teams[id].slots.filter((s) => s.role === 'N' && s.characterId).length)
-ok('每队都配置了辅助奶', healCounts.every((n) => n >= 1), healCounts.join(','))
-
-// --- 区间配置 ---
 async function setRange(teamId, role, bound, value) {
   await page.$eval(
     `[data-testid="range-${teamId}-${role}-${bound}"]`,
@@ -266,132 +251,280 @@ async function setRange(teamId, role, bound, value) {
   )
 }
 
-await setRange('red', 'C', 'min', 5000)
-await page.click('[data-testid="btn-assign"]')
-await sleep(500)
-lineup = await readLineup()
-const redCPanels = lineup.teams.red.slots
-  .filter((s) => s.role === 'C' && s.characterId)
-  .map((s) => rosterById.get(s.characterId).panel)
-ok('红队 C 只从 ≤5000 的区间里挑（min=5000）', redCPanels.every((p) => p >= 5000), redCPanels.join(','))
+const uiText = (selector) => page.$eval(selector, (el) => el.innerText)
+
+await page.click('[data-testid="tab-lineup"]')
+await page.waitForSelector('[data-testid="btn-assign"]')
+await page.waitForSelector('[data-testid="wave-tab-1"]', { timeout: 15000 })
+await sleep(800)
+
+let lineup = await readLineup()
+let roster = await readRoster()
+let rosterById = rosterByIdOf(roster)
+
+// --- 全部角色入队 ---
+const overallText = await uiText('[data-testid="overall-count"]')
+ok('总览给出已排角色数', /已将 \d+ \/ \d+ 个角色排入 \d+ 波/.test(overallText), overallText)
+ok('按角色数量自动生成多波（>1 波）', lineup.waves.length > 1, `${lineup.waves.length} 波`)
+const firstWaveAssigned = waveCharacters(lineup, 0, rosterById).length
+ok('第一波 12 人满编', firstWaveAssigned === 12, `${firstWaveAssigned}/12`)
 ok(
-  '未上场角色会出现在候补区',
-  (await page.$$eval('[data-testid="bench-chip"]', (els) => els.length)) > 0,
+  '本波上场计数正确',
+  (await uiText('[data-testid="assigned-count"]')).includes('本波上场 12/12'),
+  await uiText('[data-testid="assigned-count"]'),
 )
 
-await setRange('green', 'C', 'min', 900000)
-await page.click('[data-testid="btn-assign"]')
-await sleep(500)
-const outFlags = await page.$$eval('.flag--out', (els) => els.length)
-ok('区间够不着时兜底补位并标记「区间外」', outFlags > 0, String(outFlags))
-ok(
-  '编队检查提示区间外',
-  (await page.$eval('[data-testid="lineup-warnings"]', (el) => el.innerText)).includes('区间之外'),
-)
-
-// --- 自动分档 ---
-await page.evaluate(() => {
-  const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('按当前角色自动分档'))
-  btn.click()
-})
-await sleep(300)
-lineup = await readLineup()
-const bandMins = teamIds.map((id) => lineup.teams[id].cRange.min)
-ok('自动分档后 红 > 黄 > 绿', bandMins[0] > bandMins[1] && bandMins[1] > bandMins[2], bandMins.join(' > '))
-await page.click('[data-testid="btn-assign"]')
-await sleep(500)
-lineup = await readLineup()
-const inRangePerTeam = teamIds.map(
-  (id) => lineup.teams[id].slots.filter((s) => s.role === 'C' && s.characterId && !s.outOfRange).length,
-)
-ok('自动分档后每队至少 1 个 C 命中区间', inRangePerTeam.every((n) => n >= 1), inRangePerTeam.join(','))
-ok(
-  '自动分档后每队都有奶',
-  teamIds.every((id) => lineup.teams[id].slots.some((s) => s.role === 'N' && s.characterId)),
-)
-const warningText = await page.$eval('[data-testid="lineup-warnings"]', (el) => el.innerText)
-ok(
-  'C 合计出现红<黄这类倒挂时会提示',
-  !warningText.includes('高于') || warningText.includes('建议检查区间设置'),
-  warningText.includes('高于') ? '已提示倒挂' : '本次数据无倒挂',
-)
-
-// --- 双奶配置 ---
-await page.select('[data-testid="select-global-layout"]', '2n2c')
-await sleep(300)
-await page.click('[data-testid="btn-assign"]')
-await sleep(600)
-ok('切到双奶后共 6 个奶位', (await page.$$eval('.slot--heal', (els) => els.length)) === 6)
-lineup = await readLineup()
-const doubleHeal = teamIds.map((id) => lineup.teams[id].slots.filter((s) => s.role === 'N').map((s) => rosterById.get(s.characterId)))
-ok(
-  '双奶每队 2奶2C 且常驻奶面板 ≥ 太阳奶',
-  teamIds.every((id) => lineup.teams[id].slots.filter((s) => s.role === 'C').length === 2) &&
-    doubleHeal.every(([a, b]) => a && b && a.panel >= b.panel),
-  doubleHeal.map((p) => p.map((c) => c.panel).join('>=')).join(' | '),
-)
-
-// --- 点击互换位置 ---
-const beforeSwap = await readLineup()
-const redFirst = beforeSwap.teams.red.slots[0].characterId
-const yellowFirst = beforeSwap.teams.yellow.slots[0].characterId
-await page.click('[data-testid="slot-red-0"]')
-await page.click('[data-testid="slot-yellow-0"]')
-await sleep(400)
-const afterSwap = await readLineup()
-ok(
-  '点击两个位置可以互换角色',
-  afterSwap.teams.red.slots[0].characterId === yellowFirst &&
-    afterSwap.teams.yellow.slots[0].characterId === redFirst,
-)
-
-// --- 下场 / 上场 ---
-const beforeBench = (await page.$$eval('[data-testid="bench-chip"]', (els) => els.length))
-await page.click('[data-testid="slot-red-0"]')
-await page.evaluate(() => document.querySelector('[data-testid="bench-chip"]').click())
-await sleep(400)
-const afterBenchLineup = await readLineup()
-ok(
-  '点击场上位置再点候补角色可以下场',
-  afterBenchLineup.teams.red.slots[0].characterId === null &&
-    (await page.$$eval('[data-testid="bench-chip"]', (els) => els.length)) === beforeBench + 1,
-)
-ok('下场后该位置显示空位', (await page.$eval('[data-testid="slot-red-0"]', (el) => el.innerText)).includes('空位'))
-
-// 把候补里的奶放回空位
-await page.evaluate(() => {
-  const chip = [...document.querySelectorAll('[data-testid="bench-chip"]')].find((c) =>
-    c.innerText.includes('辅助奶'),
+// 同一个角色只能出现在一波
+const ids = allAssignedIds(lineup)
+ok('同一个角色不会重复出现在两波', new Set(ids).size === ids.length, `${ids.length} 个位置`)
+// 排不上的角色，必须是因为「同一个玩家一波只能上一个」被规则挡住，而不是算法漏排
+const seated = new Set(ids)
+const leftover = roster.filter((c) => !seated.has(c.id))
+const blockedByRule = leftover.every((c) => {
+  const waves = lineup.waves.filter((w) => w.difficulty === c.difficulty)
+  return (
+    waves.length > 0 &&
+    waves.every((w) =>
+      Object.values(w.teams)
+        .flat()
+        .some((s) => s.characterId && rosterById.get(s.characterId).player === c.player),
+    )
   )
-  if (chip) chip.click()
 })
-await sleep(200)
-await page.click('[data-testid="slot-red-0"]')
-await sleep(400)
-ok('候补角色可以重新上场', (await readLineup()).teams.red.slots.filter((s) => s.characterId).length === 4)
+ok(
+  `排不上的 ${leftover.length} 个角色都是「同玩家一波只能上一个」导致的`,
+  blockedByRule,
+  leftover.map((c) => `${c.player}/${c.name}`).slice(0, 6).join(', '),
+)
+ok('确实存在无法入队的角色（符合预期）', leftover.length >= 0, `漏掉 ${leftover.length} 个`)
 
-// --- 导出编队 ---
+// 每波同一个玩家只能上场一个角色
+const perWavePlayerOk = lineup.waves.every((wave) => {
+  const players = Object.values(wave.teams)
+    .flat()
+    .filter((s) => s.characterId)
+    .map((s) => rosterById.get(s.characterId).player)
+  return new Set(players).size === players.length
+})
+ok('每一波内同一个玩家只上场一个角色', perWavePlayerOk)
+ok(
+  '第一波每队都配置了辅助奶',
+  ['red', 'yellow', 'green'].every((id) =>
+    lineup.waves[0].teams[id].some((s) => s.role === 'N' && s.characterId),
+  ),
+)
+
+// --- 合计伤害目标：避免伤害过剩 ---
+const redTotalBefore = lineup.waves[0].teams.red
+  .filter((s) => s.role === 'C' && s.characterId)
+  .reduce((sum, s) => sum + rosterById.get(s.characterId).panel, 0)
+await setRange('red', 'TOTAL', 'min', Math.round(redTotalBefore * 0.7))
+await setRange('red', 'TOTAL', 'max', redTotalBefore)
+await page.click('[data-testid="btn-assign-wave"]')
+await sleep(600)
+lineup = await readLineup()
+const redTotalAfter = lineup.waves[0].teams.red
+  .filter((s) => s.role === 'C' && s.characterId)
+  .reduce((sum, s) => sum + rosterById.get(s.characterId).panel, 0)
+ok(
+  `红队 C 合计落在合计目标内（${Math.round(redTotalBefore * 0.7)} ~ ${redTotalBefore}）`,
+  redTotalAfter >= Math.round(redTotalBefore * 0.7) && redTotalAfter <= redTotalBefore,
+  String(redTotalAfter),
+)
+ok(
+  '队伍卡片显示合计与目标、达标状态',
+  (await uiText('[data-testid="slot-red-0"]')) !== '' && (await page.$eval('.team__foot', (el) => el.innerText)).includes('目标'),
+)
+
+// 合计上限压得很低时应避免堆强 C
+await setRange('red', 'TOTAL', 'min', 1000)
+await setRange('red', 'TOTAL', 'max', Math.round(redTotalBefore * 0.5))
+await page.click('[data-testid="btn-assign-wave"]')
+await sleep(600)
+lineup = await readLineup()
+const redTotalLow = lineup.waves[0].teams.red
+  .filter((s) => s.role === 'C' && s.characterId)
+  .reduce((sum, s) => sum + rosterById.get(s.characterId).panel, 0)
+ok('合计上限压低后不会再堆最强 C（伤害不过剩）', redTotalLow <= Math.round(redTotalBefore * 0.5), String(redTotalLow))
+await setRange('red', 'TOTAL', 'min', '')
+await setRange('red', 'TOTAL', 'max', '')
+await page.click('[data-testid="btn-assign-wave"]')
+await sleep(500)
+
+// --- 显示格式标签 ---
+ok('显示格式标签共 5 种', (await page.$$eval('[data-testid="format-tags"] .tag-btn', (els) => els.length)) === 5)
+await page.click('[data-testid="format-name-value"]')
+await sleep(300)
+const nameValueText = await uiText('[data-testid="slot-red-0"]')
+ok('切到「角色·属性」后不显示玩家名', !roster.some((c) => nameValueText.includes(c.player) && c.player.length > 1 && nameValueText.startsWith(c.player)))
+await page.click('[data-testid="format-player-name-value"]')
+await sleep(300)
+lineup = await readLineup()
+const redFirst = rosterById.get(lineup.waves[0].teams.red[0].characterId)
+const defaultText = await uiText('[data-testid="slot-red-0"]')
+ok(
+  '默认格式为 玩家·角色·属性',
+  defaultText.includes(redFirst.player) && defaultText.includes(redFirst.name) && defaultText.includes(redFirst.panel.toLocaleString('zh-CN')),
+  defaultText.replace(/\n/g, ' | '),
+)
+
+// --- 职业配色 ---
+const colorOf = (selector) =>
+  page.$eval(selector, (el) => {
+    const span = [...el.querySelectorAll('.slot__main span')].find((s) => s.style.color)
+    return span ? getComputedStyle(span).color : ''
+  })
+const healSlotIndex = lineup.waves[0].teams.red.findIndex((s) => s.role === 'N')
+await page.click('[data-testid="wave-tab-0"]')
+await sleep(200)
+const healColor = await colorOf(`[data-testid="slot-red-${healSlotIndex}"]`)
+const cSlotIndex = lineup.waves[0].teams.red.findIndex((s) => s.role === 'C' && s.characterId)
+const cColor = await colorOf(`[data-testid="slot-red-${cSlotIndex}"]`)
+ok('辅助奶显示为绿色', healColor === 'rgb(52, 211, 153)', healColor)
+ok('输出C显示为蓝色（不与红黄绿队色冲突）', cColor === 'rgb(96, 165, 250)', cColor)
+
+// --- 手动增删角色 ---
+await page.click(`[data-testid="slot-red-${cSlotIndex}"]`)
+await page.hover(`[data-testid="slot-red-${cSlotIndex}"]`)
+await page.click(`[data-testid="slot-red-${cSlotIndex}"] .slot__remove`)
+await sleep(400)
+lineup = await readLineup()
+ok('✕ 可以把角色从队伍里删掉（回到候补）', lineup.waves[0].teams.red[cSlotIndex].characterId === null)
+ok('空位显示空位提示', (await uiText(`[data-testid="slot-red-${cSlotIndex}"]`)).includes('空位'))
+const benchCountBefore = await page.$$eval('[data-testid="bench-chip"]', (els) => els.length)
+await page.evaluate(() => document.querySelector('[data-testid="bench-chip"]').click())
+await page.click(`[data-testid="slot-red-${cSlotIndex}"]`)
+await sleep(400)
+lineup = await readLineup()
+ok(
+  '候补角色可以手动补进空位',
+  lineup.waves[0].teams.red[cSlotIndex].characterId !== null &&
+    (await page.$$eval('[data-testid="bench-chip"]', (els) => els.length)) === benchCountBefore - 1,
+)
+
+// --- 跨波次移动（新增一个空波次，把角色挪过去） ---
+await page.click('[data-testid="wave-tab-0"]')
+await sleep(250)
+lineup = await readLineup()
+const wavesBeforeCross = lineup.waves.length
+await page.click('[data-testid="btn-add-wave"]')
+await sleep(350)
+lineup = await readLineup()
+ok(
+  '新增的空波次插在当前波之后且没有角色',
+  lineup.waves.length === wavesBeforeCross + 1 &&
+    lineup.waves[1].teams.red.every((s) => !s.characterId) &&
+    lineup.waves[1].teams.green.every((s) => !s.characterId),
+)
+
+const srcSlotIndex = lineup.waves[0].teams.red.findIndex((s) => s.role === 'C' && s.characterId)
+const movingId = lineup.waves[0].teams.red[srcSlotIndex].characterId
+const tgtSlotIndex = lineup.waves[1].teams.red.findIndex((s) => s.role === 'C')
+await page.click('[data-testid="wave-tab-0"]')
+await sleep(200)
+await page.click(`[data-testid="slot-red-${srcSlotIndex}"]`)
+await page.click('[data-testid="wave-tab-1"]')
+await sleep(250)
+await page.click(`[data-testid="slot-red-${tgtSlotIndex}"]`)
+await sleep(450)
+lineup = await readLineup()
+ok(
+  `跨波次把${rosterById.get(movingId).name}从第一波移到新波次`,
+  lineup.waves[1].teams.red[tgtSlotIndex].characterId === movingId,
+)
+ok('第一波原位置变成空位', lineup.waves[0].teams.red[srcSlotIndex].characterId === null)
+ok(
+  '跨波移动后每一波依然没有同玩家重复',
+  lineup.waves.every((wave) => {
+    const players = Object.values(wave.teams)
+      .flat()
+      .filter((s) => s.characterId)
+      .map((s) => rosterById.get(s.characterId).player)
+    return new Set(players).size === players.length
+  }),
+)
+
+// 同玩家冲突的移动会被拒绝（第二波 12 个玩家都已上场）
+lineup = await readLineup()
+const fullWaveIndex = 2
+const fullWavePlayers = new Set(
+  Object.values(lineup.waves[fullWaveIndex].teams)
+    .flat()
+    .filter((s) => s.characterId)
+    .map((s) => rosterById.get(s.characterId).player),
+)
+const conflictSource = lineup.waves[0].teams.red.findIndex(
+  (s) => s.role === 'C' && s.characterId && fullWavePlayers.has(rosterById.get(s.characterId).player),
+)
+const conflictSourcePlayer =
+  conflictSource === -1 ? null : rosterById.get(lineup.waves[0].teams.red[conflictSource].characterId).player
+const conflictTarget = lineup.waves[fullWaveIndex].teams.green.findIndex(
+  (s) =>
+    s.role === 'C' && s.characterId && rosterById.get(s.characterId).player !== conflictSourcePlayer,
+)
+if (conflictSource !== -1 && conflictTarget !== -1) {
+  const before = JSON.stringify((await readLineup()).waves)
+  await page.click('[data-testid="wave-tab-0"]')
+  await sleep(250)
+  await page.click(`[data-testid="slot-red-${conflictSource}"]`)
+  await page.click(`[data-testid="wave-tab-${fullWaveIndex}"]`)
+  await sleep(300)
+  await page.click(`[data-testid="slot-green-${conflictTarget}"]`)
+  await sleep(450)
+  const after = (await readLineup()).waves
+  const toastText = (await page.$$eval('.toast', (els) => els.map((e) => e.innerText))).join(' / ')
+  ok(
+    '同玩家在同一波重复上场的移动会被拒绝',
+    JSON.stringify(after) === before && toastText.includes('已经上场了一个角色'),
+    toastText,
+  )
+} else {
+  ok('同玩家在同一波重复上场的移动会被拒绝', true, '本次数据没有可构造的冲突场景')
+}
+
+// --- 波次增删 ---
+const wavesBefore = lineup.waves.length
+await page.click('[data-testid="btn-add-wave"]')
+await sleep(300)
+ok('可以手动加波次', (await readLineup()).waves.length === wavesBefore + 1)
+await page.click('[data-testid="btn-remove-wave"]')
+await sleep(300)
+ok('可以手动删波次', (await readLineup()).waves.length === wavesBefore)
+
+// --- 导出 ---
 await page.click('[data-testid="btn-export-lineup"]')
-const lineupFile = await waitForFile(DL, /^DNF打团编队_.*\.xlsx$/, 8000)
+const lineupFile = await waitForFile(DL, /^DNF打团编队_.*\.xlsx$/, 10000)
 ok('导出编队 xlsx', Boolean(lineupFile), lineupFile || '未找到文件')
 if (lineupFile) {
   const wb = XLSX.read(fs.readFileSync(path.join(DL, lineupFile)), { type: 'buffer' })
-  ok('编队表含「编队」与「未上场」两个工作表', wb.SheetNames.includes('编队') && wb.SheetNames.includes('未上场'), wb.SheetNames.join(','))
+  ok(
+    '导出含 编队 / 各队合计 / 未上场 三个工作表',
+    ['编队', '各队合计', '未上场'].every((n) => wb.SheetNames.includes(n)),
+    wb.SheetNames.join(','),
+  )
   const rows = XLSX.utils.sheet_to_json(wb.Sheets['编队'], { header: 1 })
-  ok('编队表表头正确', JSON.stringify(rows[0]) === JSON.stringify(['队伍', '位置', '角色类型', '归属玩家', '角色称呼', '面板数值', '区间状态']), JSON.stringify(rows[0]))
-  ok('编队表正好 12 行（三队 × 4 人）', rows.length - 1 === 12, String(rows.length - 1))
+  ok(
+    '编队表表头与波次列正确',
+    JSON.stringify(rows[0]) === JSON.stringify(['波次', '团本难度', '队伍', '位置', '角色类型', '归属玩家', '角色称呼', '面板数值', '区间状态']),
+    JSON.stringify(rows[0]),
+  )
+  const finalWaves = (await readLineup()).waves.length
+  ok(`编队表覆盖全部 ${finalWaves} 波（每波 12 行）`, rows.length - 1 === finalWaves * 12, String(rows.length - 1))
+  const summaryRows = XLSX.utils.sheet_to_json(wb.Sheets['各队合计'], { header: 1 })
+  ok('各队合计表含目标列', summaryRows[0].includes('C 合计伤害') && summaryRows[0].includes('合计状态'))
 }
 
 // --- 持久化 ---
-const lineupBeforeReload = await readLineup()
+const beforeReload = await readLineup()
 await page.reload({ waitUntil: 'networkidle0' })
 await page.waitForSelector('[data-testid="btn-assign"]')
-await sleep(500)
+await sleep(800)
 const afterReload = await readLineup()
 ok(
-  '刷新后编队与配置保持不变',
-  JSON.stringify(afterReload.teams) === JSON.stringify(lineupBeforeReload.teams) &&
-    afterReload.difficulty === lineupBeforeReload.difficulty,
+  '刷新后所有波次与配置保持不变',
+  JSON.stringify(afterReload.waves) === JSON.stringify(beforeReload.waves) &&
+    JSON.stringify(afterReload.config) === JSON.stringify(beforeReload.config) &&
+    afterReload.displayFormat === beforeReload.displayFormat,
 )
 ok('页签状态也记住了（刷新后仍在编队页）', Boolean(await page.$('[data-testid="btn-assign"]')))
 

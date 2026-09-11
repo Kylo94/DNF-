@@ -1,8 +1,8 @@
 <script setup>
 import { computed } from 'vue'
 import { HEAL_SLOT_LABELS } from '../../constants.js'
-import { ROLE_LABEL } from '../../utils/lineup.js'
-import { formatPanel } from '../../utils/format.js'
+import { formatNumber } from '../../utils/lineup.js'
+import { ROLE_COLORS, characterParts } from '../../utils/display.js'
 
 const props = defineProps({
   team: { type: Object, required: true },
@@ -10,11 +10,13 @@ const props = defineProps({
   stats: { type: Object, default: () => ({}) },
   byId: { type: Map, default: () => new Map() },
   difficulty: { type: String, default: '' },
+  waveIndex: { type: Number, default: 0 },
+  displayFormat: { type: String, default: 'player-name-value' },
   selected: { type: Object, default: null },
   dragActive: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['slot-click', 'slot-drop', 'drag-start', 'drag-end', 'swap-heals'])
+const emit = defineEmits(['slot-click', 'slot-drop', 'drag-start', 'drag-end', 'swap-heals', 'remove-slot'])
 
 const healCount = computed(() => props.slots.filter((s) => s.role === 'N').length)
 
@@ -23,9 +25,6 @@ const healIndexes = computed(() => {
   return props.slots.map((s) => (s.role === 'N' ? n++ : -1))
 })
 
-const cCount = computed(() => props.slots.filter((s) => s.role === 'C').length)
-
-/** 太阳奶面板高于常驻奶时提示互换 */
 const healOrderWarning = computed(() => {
   if (healCount.value < 2) return false
   const heals = props.slots.filter((s) => s.role === 'N')
@@ -34,6 +33,14 @@ const healOrderWarning = computed(() => {
   const first = props.byId.get(a.characterId)
   const second = props.byId.get(b.characterId)
   return Boolean(first && second && Number(second.panel) > Number(first.panel))
+})
+
+const totalState = computed(() => {
+  const s = props.stats || {}
+  if (!s.cTargetReady) return { kind: 'none', text: '' }
+  if (s.cUnder) return { kind: 'under', text: '低于合计下限' }
+  if (s.cOver) return { kind: 'over', text: '超出上限（伤害过剩）' }
+  return { kind: 'ok', text: '合计达标' }
 })
 
 function positionLabel(slot, index) {
@@ -52,8 +59,26 @@ function characterOf(slot) {
   return slot.characterId ? props.byId.get(slot.characterId) : null
 }
 
+function partsOf(slot) {
+  return characterParts(characterOf(slot), props.displayFormat)
+}
+
+function partStyle(part, character) {
+  if (!character || !character.type) return {}
+  const color = ROLE_COLORS[character.type] || 'inherit'
+  if (part.kind === 'name') return { color, fontWeight: 600 }
+  if (part.kind === 'value') return { color, opacity: 0.9 }
+  return {}
+}
+
 function isSelected(teamId, index) {
-  return props.selected && props.selected.kind === 'slot' && props.selected.teamId === teamId && props.selected.index === index
+  return (
+    props.selected &&
+    props.selected.kind === 'slot' &&
+    (props.selected.waveIndex ?? 0) === props.waveIndex &&
+    props.selected.teamId === teamId &&
+    props.selected.index === index
+  )
 }
 
 function onDragStart(event, slot, index) {
@@ -73,9 +98,7 @@ function onDragStart(event, slot, index) {
       <span class="dot" />
       <h3>{{ team.name }}</h3>
       <span class="layout">{{ team.layout === '2n2c' ? '双奶 2奶2C' : '单奶 1奶3C' }}</span>
-      <span class="filled" :class="{ 'filled--bad': stats.empty }">
-        {{ stats.filled || 0 }}/{{ stats.total || 4 }}
-      </span>
+      <span class="filled" :class="{ 'filled--bad': stats.empty }">{{ stats.filled || 0 }}/{{ stats.total || 4 }}</span>
     </header>
 
     <div class="slots">
@@ -102,12 +125,21 @@ function onDragStart(event, slot, index) {
         <div class="slot__head">
           <span class="pos">{{ positionLabel(slot, index) }}</span>
           <span class="pos-hint">{{ positionHint(slot, index) }}</span>
+          <button
+            v-if="slot.characterId"
+            class="slot__remove"
+            title="移出该位置（回到候补区）"
+            @click.stop="emit('remove-slot', team.id, index)"
+          >
+            ✕
+          </button>
         </div>
 
         <template v-if="characterOf(slot)">
-          <div class="slot__name">{{ characterOf(slot).name }}</div>
-          <div class="slot__meta">
-            {{ characterOf(slot).player }} · {{ formatPanel(characterOf(slot).panel) }}
+          <div class="slot__main">
+            <span v-for="(part, i) in partsOf(slot)" :key="i" :style="partStyle(part, characterOf(slot))">
+              {{ part.text }}
+            </span>
           </div>
           <div class="slot__flags">
             <span v-if="slot.outOfRange" class="flag flag--out">区间外</span>
@@ -116,25 +148,30 @@ function onDragStart(event, slot, index) {
         </template>
         <template v-else>
           <div class="slot__empty">空位</div>
-          <div class="slot__meta">待补 {{ ROLE_LABEL[slot.role] }}</div>
+          <div class="slot__hint">拖入候补角色，或点这里再点候补角色</div>
         </template>
       </div>
     </div>
 
     <footer class="team__foot">
-      <span>C 合计 <strong>{{ formatPanel(stats.cTotal || 0) }}</strong></span>
-      <span v-if="stats.cCount">均 {{ formatPanel(stats.cAverage) }}</span>
-      <span v-if="stats.healCount">奶均 {{ formatPanel(stats.nAverage) }}</span>
-      <span v-if="stats.outOfRange" class="warn">{{ stats.outOfRange }} 个区间外</span>
+      <span class="foot__total">
+        C 合计 <strong :class="`is-${totalState.kind}`">{{ formatNumber(stats.cTotal || 0) }}</strong>
+        <template v-if="stats.cTargetReady">
+          <span class="foot__target">
+            / 目标 {{ stats.cTarget.min === null ? '不限' : formatNumber(stats.cTarget.min) }} ~
+            {{ stats.cTarget.max === null ? '不限' : formatNumber(stats.cTarget.max) }}
+          </span>
+          <span class="foot__state" :class="`is-${totalState.kind}`">{{ totalState.text }}</span>
+        </template>
+      </span>
+      <span v-if="stats.cCount" class="foot__misc">C 均 {{ formatNumber(stats.cAverage) }}</span>
+      <span v-if="stats.healCount" class="foot__misc">奶均 {{ formatNumber(stats.nAverage) }}</span>
+      <span v-if="stats.outOfRange" class="foot__misc is-out">{{ stats.outOfRange }} 个区间外</span>
     </footer>
 
     <button v-if="healOrderWarning" class="heal-swap" @click="emit('swap-heals', team.id)">
       ⚠ 太阳奶面板高于常驻奶，点此互换两个奶位
     </button>
-
-    <p v-if="team.layout === '2n2c'" class="team__tip">
-      双奶：{{ healCount }} 奶 + {{ cCount }} C，面板高的奶自动放常驻位
-    </p>
   </section>
 </template>
 
@@ -202,7 +239,7 @@ function onDragStart(event, slot, index) {
   border: 1px solid var(--border);
   background: var(--bg-input);
   cursor: grab;
-  transition: border-color 0.15s, transform 0.15s, background 0.15s;
+  transition: border-color 0.15s, background 0.15s;
 }
 
 .slot:active {
@@ -210,7 +247,7 @@ function onDragStart(event, slot, index) {
 }
 
 .slot--heal {
-  border-left: 3px solid #4ade80;
+  border-left: 3px solid #34d399;
 }
 
 .slot--c {
@@ -239,7 +276,7 @@ function onDragStart(event, slot, index) {
 
 .slot__head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
   margin-bottom: 3px;
 }
@@ -254,10 +291,31 @@ function onDragStart(event, slot, index) {
   color: rgba(139, 151, 172, 0.7);
 }
 
-.slot__name {
-  font-size: 14.5px;
-  font-weight: 600;
-  color: var(--text);
+.slot__remove {
+  margin-left: auto;
+  padding: 0 5px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.slot:hover .slot__remove {
+  opacity: 1;
+}
+
+.slot__remove:hover {
+  color: #fca5a5;
+}
+
+.slot__main {
+  font-size: 14px;
+  line-height: 1.45;
+  word-break: break-all;
 }
 
 .slot__empty {
@@ -265,10 +323,9 @@ function onDragStart(event, slot, index) {
   color: var(--text-dim);
 }
 
-.slot__meta {
-  font-size: 12px;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
+.slot__hint {
+  font-size: 11.5px;
+  color: rgba(139, 151, 172, 0.75);
 }
 
 .slot__flags {
@@ -305,11 +362,35 @@ function onDragStart(event, slot, index) {
 }
 
 .team__foot strong {
+  font-variant-numeric: tabular-nums;
   color: var(--text-soft);
+}
+
+.foot__target {
   font-variant-numeric: tabular-nums;
 }
 
-.team__foot .warn {
+.foot__state {
+  margin-left: 4px;
+}
+
+.is-ok {
+  color: #34d399 !important;
+}
+
+.is-under {
+  color: #fde68a !important;
+}
+
+.is-over {
+  color: #fca5a5 !important;
+}
+
+.is-none {
+  color: var(--text-soft) !important;
+}
+
+.foot__misc.is-out {
   color: #fdba74;
 }
 
@@ -322,11 +403,5 @@ function onDragStart(event, slot, index) {
   font-size: 12px;
   cursor: pointer;
   text-align: left;
-}
-
-.team__tip {
-  margin: 0;
-  font-size: 11.5px;
-  color: var(--text-dim);
 }
 </style>

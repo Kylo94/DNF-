@@ -10,6 +10,7 @@ const props = defineProps({
   assignedCount: { type: Number, default: 0 },
   raidSize: { type: Number, default: 12 },
   difficulty: { type: String, default: '' },
+  waveName: { type: String, default: '' },
 })
 
 const emit = defineEmits(['drag-start', 'drag-end', 'drop-bench', 'select'])
@@ -40,8 +41,8 @@ function onDragStart(event, character) {
       <div class="bench__title">
         <h3>未上场角色</h3>
         <span class="muted">
-          本波可用 {{ poolStats.total }} 个（输出C {{ poolStats.c }} · 辅助奶 {{ poolStats.n }}）·
-          已上场 {{ assignedCount }}/{{ raidSize }}
+          所有波次都没排上的角色 · {{ difficulty }} 已登记 {{ poolStats.total }} 个（输出C {{ poolStats.c }} ·
+          辅助奶 {{ poolStats.n }}）· {{ waveName }}当前 {{ assignedCount }}/{{ raidSize }}
         </span>
       </div>
       <div class="bench__filters">
@@ -89,13 +90,14 @@ function onDragStart(event, character) {
         {{
           bench.length
             ? '没有符合筛选条件的角色'
-            : '本波角色已全部上场（或还没有登记' + difficulty + '的角色）'
+            : waveName + '的角色已全部排上（或还没有登记' + difficulty + '的角色）'
         }}
       </p>
     </div>
 
     <p class="bench__tip">
-      提示：把这里的角色拖到队伍空位即可上场；把场上角色拖到此处即下场。也可以先点场上位置、再点目标位置完成移动/互换。
+      提示：把这里的角色拖到队伍空位即可上场（当前是{{ waveName }}）；把场上角色拖到此处即下场；跨波次可以把 A 波的角色直接拖到 B 波的位置。
+      也可以「先点场上位置、再点目标位置」完成移动/互换。
     </p>
   </section>
 </template>

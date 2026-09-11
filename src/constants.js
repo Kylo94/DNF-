@@ -78,12 +78,28 @@ export const TEAM_LAYOUTS = [
 /** 双奶时两个奶位的语义（顺序与槽位一致，面板高的自动放常驻位） */
 export const HEAL_SLOT_LABELS = ['常驻奶', '太阳奶']
 
-export const STORAGE_KEY_LINEUP = 'dnf-raid-lineup-v1'
+export const STORAGE_KEY_LINEUP = 'dnf-raid-lineup-v2'
+/** 旧版（单波次）编队数据结构，用于自动迁移 */
+export const STORAGE_KEY_LINEUP_V1 = 'dnf-raid-lineup-v1'
+
+/** 一波最多排多少波（防止数据异常时爆掉） */
+export const MAX_WAVES = 30
+
+/** 波次名称：第一波、第二波…… */
+export function waveName(index) {
+  const digits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九']
+  const n = index + 1
+  if (n <= 10) return `第${n === 10 ? '十' : digits[n]}波`
+  if (n < 20) return `第十${digits[n - 10]}波`
+  if (n === 20) return '第二十波'
+  return `第${digits[Math.floor(n / 10)]}十${n % 10 ? digits[n % 10] : ''}波`
+}
 
 /** 排序/视图选项：编队候选列表 */
 export const BENCH_REASON_LABEL = {
-  'player-conflict': '同玩家已上场',
+  'player-conflict': '同玩家本波已上场',
   'not-selected': '未入选',
+  'used-other-wave': '已在其他波上场',
   'difficulty-mismatch': '难度不符',
 }
 
