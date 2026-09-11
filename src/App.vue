@@ -8,6 +8,7 @@ import { DIFFICULTIES, SORT_OPTIONS, CHAR_TYPES } from './constants.js'
 import { useCharacters } from './composables/useCharacters.js'
 import { useToast } from './composables/useToast.js'
 import { exportCharactersToExcel, parseExcelFile } from './utils/excel.js'
+import { IS_BETA, VERSION_LABEL } from './version.js'
 
 const {
   characters,
@@ -254,7 +255,10 @@ function handleExportFiltered() {
 
     <header class="hero">
       <div class="hero__left">
-        <h1>DNF 打团排表 · 角色登记</h1>
+        <div class="hero__title">
+          <h1>DNF 打团排表 · 角色登记</h1>
+          <span class="ver" data-testid="version">{{ VERSION_LABEL }}</span>
+        </div>
         <p>
           登记每位玩家的输出C与辅助奶角色，标注普通团 / 困难团，一键保存为 Excel 存档。
           数据同时保存在本机浏览器中，关闭页面不会丢失。
@@ -332,8 +336,16 @@ function handleExportFiltered() {
     </main>
 
     <footer class="foot">
-      导出的 Excel 表头：归属玩家 / 角色称呼 / 角色类型（C=输出C，N=辅助奶）/ 面板数值（C=站街模拟伤害，奶=面板三攻）/
-      难度类型（普通团 / 困难团）。旧表里的「Ban状态」列会在导入时自动忽略。
+      <p class="foot__meta">
+        <span data-testid="footer-version">{{ VERSION_LABEL }}</span>
+        <template v-if="IS_BETA">
+          · 1.0 之前的版本均为<strong>内测版</strong>，功能与数据结构可能调整，重要数据请及时导出 Excel 备份。
+        </template>
+      </p>
+      <p>
+        导出的 Excel 表头：归属玩家 / 角色称呼 / 角色类型（C=输出C，N=辅助奶）/ 面板数值（C=站街模拟伤害，奶=面板三攻）/
+        难度类型（普通团 / 困难团）。旧表里的「Ban状态」列会在导入时自动忽略。
+      </p>
     </footer>
 
     <!-- 导入方式选择 -->
@@ -378,6 +390,23 @@ function handleExportFiltered() {
   gap: 24px;
   flex-wrap: wrap;
   margin-bottom: 22px;
+}
+
+.hero__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ver {
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  border: 1px solid rgba(240, 198, 116, 0.45);
+  background: rgba(240, 198, 116, 0.1);
 }
 
 .hero__left h1 {
@@ -464,6 +493,20 @@ function handleExportFiltered() {
 
 .muted {
   color: var(--text-dim);
+}
+
+.foot p {
+  margin: 0;
+}
+
+.foot__meta {
+  margin-bottom: 6px !important;
+  color: var(--text-soft);
+}
+
+.foot__meta strong {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .foot {

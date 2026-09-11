@@ -18,6 +18,8 @@ import * as XLSX from 'xlsx'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const URL = process.env.SMOKE_URL || 'http://localhost:5273/'
 const SAMPLE = path.join(ROOT, '薄纱团本角色数据.xlsx')
+const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'))
+const EXPECT_VERSION = `v${PKG.version} · ${PKG.version.split('.')[0] === '0' ? '内测版' : '正式版'}`
 const DL = path.join(ROOT, '.smoke-downloads')
 
 const CANDIDATES = [
@@ -99,6 +101,12 @@ async function waitForFile(dir, re, timeout = 8000) {
 await page.goto(URL, { waitUntil: 'networkidle0' })
 await page.waitForSelector('[data-testid="btn-submit"]')
 ok('页面渲染', (await page.$eval('h1', (el) => el.textContent)).includes('角色登记'))
+const shownVersion = await page.$eval('[data-testid="version"]', (el) => el.textContent.trim())
+ok(`标题显示版本号（package.json = ${PKG.version}）`, shownVersion === EXPECT_VERSION, shownVersion)
+ok(
+  '页脚显示版本号与内测说明',
+  (await page.$eval('[data-testid="footer-version"]', (el) => el.textContent.trim())) === EXPECT_VERSION,
+)
 
 // 1. 空表单校验
 await page.click('[data-testid="btn-submit"]')

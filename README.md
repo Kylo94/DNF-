@@ -1,5 +1,9 @@
 # DNF 打团排表 · 角色登记
 
+> 当前版本 **v0.1.0 · 内测版**（版本号以 `package.json` 为准，界面标题右侧会显示）。
+> **1.0 之前的全部版本都是内测版本**，功能与 Excel 数据结构仍可能调整，重要数据请及时导出备份。
+> 变更记录见 [CHANGELOG.md](./CHANGELOG.md)。
+
 给团长用的 DNF 打团排表工具，当前完成 **第一步：角色登记**。
 登记每位玩家的角色，一键导出 Excel 存档，也可以直接导入现有的角色数据表继续登记。
 
@@ -46,16 +50,58 @@ npm run build:single  # 打包成单个 dist-single/index.html，双击即可用
 
 `npm run build` 之后用 `npm run preview` 预览打包结果（直接双击 `dist/index.html` 会因为浏览器限制 ES module 而打不开，用单文件版本可以）。
 
+## 版本与发版
+
+版本阶段划分（详见 [CHANGELOG.md](./CHANGELOG.md)）：
+
+| 版本段 | 阶段 | 说明 |
+| --- | --- | --- |
+| `0.x.y` | **内测版** | 1.0 之前的全部版本，团队内部测试用 |
+| `1.0.0` 起 | 正式版 | 功能稳定、数据结构冻结后发布 |
+
+- 版本号唯一数据源：`package.json` → 构建时注入界面显示 `v版本号 · 内测版`
+- 每个版本对应一个 git 标签 `v<版本号>`（内测版在 GitHub 上标记为 Pre-release）
+- 发版（自动改版本号 → 写 CHANGELOG → 提交 → 打标签）：
+
+```bash
+npm run release                      # 看当前版本和用法
+npm run release -- patch "修复导入表头识别"      # 0.1.0 → 0.1.1
+npm run release -- minor "新增排表试算"          # 0.1.1 → 0.2.0
+npm run release -- patch "说明" --push           # 发版并推送提交与标签
+npm run release -- major "首个正式版" --stable    # 只有加 --stable 才允许升到 1.x
+```
+
+> 脚本会把当前工作区的改动一起提交为 `chore(release): vX.Y.Z 内测版`。
+
+## Git 提交规范
+
+采用 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/)，一条提交只做一件事，便于回溯每个内测版本包含的内容：
+
+| 类型 | 用途 | 示例 |
+| --- | --- | --- |
+| `feat` | 新功能 | `feat(登记): 支持按玩家批量导入角色` |
+| `fix` | 修 bug | `fix(导入): 修正旧表 Ban状态 列映射为普通团` |
+| `refactor` | 重构（不改行为） | `refactor(excel): 抽出表头别名映射` |
+| `perf` | 性能优化 | `perf(列表): 大名单渲染去掉重复分组计算` |
+| `docs` | 文档 | `docs: 补充 Excel 字段说明` |
+| `test` | 测试 | `test(smoke): 增加版本号显示断言` |
+| `style` | 格式/样式（不改逻辑） | `style: 统一按钮圆角` |
+| `chore` | 构建、依赖、发版 | `chore(release): v0.1.1 内测版` |
+
+常用流程：`git commit -m "feat(排表): 新增拖拽分团"` → 累积若干条后 `npm run release -- minor "排表功能上线"`。
+
 ## 目录结构
 
 ```
 ├── index.html                    入口页面
+├── CHANGELOG.md                  更新日志（版本阶段划分）
 ├── public/favicon.svg            图标
 ├── src/
 │   ├── main.js                   应用入口
 │   ├── App.vue                   页面布局、筛选、导入导出、增删改调度
 │   ├── style.css                 全局样式（深色 + 金色主题）
 │   ├── constants.js              角色类型 / 难度 / Excel 表头等常量
+│   ├── version.js                版本信息（构建时从 package.json 注入）
 │   ├── components/
 │   │   ├── CharacterForm.vue     角色登记表单（校验、连续登记）
 │   │   ├── CharacterTable.vue    按玩家分组的角色列表
@@ -67,7 +113,9 @@ npm run build:single  # 打包成单个 dist-single/index.html，双击即可用
 │   └── utils/
 │       ├── excel.js              Excel 导入解析 / 导出下载
 │       └── format.js             数值解析与格式化
-└── scripts/smoke-test.mjs        端到端冒烟测试（28 项）
+└── scripts/
+    ├── smoke-test.mjs            端到端冒烟测试（28 项）
+    └── release.mjs               内测版发版脚本（版本号 + CHANGELOG + 标签）
 ```
 
 ## 测试
