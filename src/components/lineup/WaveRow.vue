@@ -18,6 +18,9 @@ const props = defineProps({
   assigned: { type: Number, default: 0 },
   total: { type: Number, default: 12 },
   warnCount: { type: Number, default: 0 },
+  /** 算法自动改配置的说明：{ teamId: '原因' } */
+  notes: { type: Object, default: () => ({}) },
+  globalLayout: { type: String, default: 'auto' },
 })
 
 const emit = defineEmits([
@@ -42,6 +45,24 @@ const healOrderWarning = computed(() => {
   }
   return null
 })
+
+/** 该队实际用了几个奶位（自动配置下每波可能不同） */
+function actualLayout(teamId) {
+  const list = props.wave.teams[teamId] || []
+  return list.filter((s) => s.role === 'N').length >= 2 ? '2n2c' : '1n3c'
+}
+
+function layoutText(teamId) {
+  return actualLayout(teamId) === '2n2c' ? '2奶2C' : '1奶3C'
+}
+
+function isAutoPicked(teamId) {
+  return actualLayout(teamId) === '2n2c' && props.notes?.[teamId]
+}
+
+function noteOf(teamId) {
+  return props.notes?.[teamId] || ''
+}
 
 function characterOf(slot) {
   return slot.characterId ? props.byId.get(slot.characterId) : null
@@ -145,16 +166,22 @@ function teamTotal(teamId) {
       <header class="team-group__head">
         <span class="dot" />
         <strong>{{ team.name }}</strong>
-        <span class="team-group__layout">{{ team.layout === '2n2c' ? '2奶2C' : '1奶3C' }}</span>
+        <span class="team-group__layout" :class="{ 'is-auto': isAutoPicked(team.id) }" :title="noteOf(team.id)">
+          {{ layoutText(team.id) }}<template v-if="isAutoPicked(team.id)">·自动</template>
+        </span>
         <span class="team-group__count" :class="{ 'is-bad': teamTotal(team.id).empty }">
           {{ teamTotal(team.id).filled || 0 }}/{{ teamTotal(team.id).total || 4 }}
         </span>
-        <span class="team-group__sum" :class="`is-${teamTotal(team.id).cTargetReady ? (teamTotal(team.id).cUnder ? 'under' : teamTotal(team.id).cOver ? 'over' : 'ok') : 'none'}`">
-          Σ {{ formatNumber(teamTotal(team.id).cTotal || 0) }}
+        <span
+          class="team-group__sum"
+          :class="`is-${teamTotal(team.id).cTargetReady ? (teamTotal(team.id).cUnder ? 'under' : teamTotal(team.id).cOver ? 'over' : 'ok') : 'none'}`"
+          :title="`C 合计伤害 / 目标区间${actualLayout(team.id) === '2n2c' ? '（双奶按 2/3 折算）' : ''}`"
+        >
+          合计 {{ formatNumber(teamTotal(team.id).cTotal || 0) }}
           <template v-if="teamTotal(team.id).cTargetReady">
-            ({{ teamTotal(team.id).cTarget.min === null ? '不限' : formatNumber(teamTotal(team.id).cTarget.min) }}~{{
+            /{{ teamTotal(team.id).cTarget.min === null ? '不限' : formatNumber(teamTotal(team.id).cTarget.min) }}~{{
               teamTotal(team.id).cTarget.max === null ? '不限' : formatNumber(teamTotal(team.id).cTarget.max)
-            }})
+            }}
           </template>
         </span>
       </header>
@@ -305,6 +332,13 @@ function teamTotal(teamId) {
   border: 1px solid var(--border);
   color: var(--text-dim);
   font-size: 10.5px;
+}
+
+.team-group__layout.is-auto {
+  color: var(--accent);
+  border-color: rgba(240, 198, 116, 0.5);
+  background: rgba(240, 198, 116, 0.1);
+  cursor: help;
 }
 
 .team-group__count {

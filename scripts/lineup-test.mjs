@@ -7,6 +7,7 @@ import {
   chooseCombination,
   computeBench,
   computeWavesNeeded,
+  effectiveTotalRange,
   layoutSlots,
   suggestRanges,
   teamSummary,
@@ -369,6 +370,97 @@ console.log('\n=== 9. 自动分档同时给出合计伤害目标 ===')
       summary.cTargetReady && !summary.cUnder && !summary.cOver,
     )
   }
+}
+
+/* ------------------------------------------------------------------ */
+console.log('\n=== 10. 混子玩法：自动双奶（红黄保强度、绿队带混子） ===')
+{
+  // 4 个奶 + 8 个 C：只有 2 个达到红队门槛，其余是混子
+  const pool = [
+    ch('c1', 'p1', '主力C1', 'C', 12000),
+    ch('c2', 'p2', '主力C2', 'C', 11000),
+    ch('c3', 'p3', '次主力C1', 'C', 7000),
+    ch('c4', 'p4', '次主力C2', 'C', 6500),
+    ch('c5', 'p5', '次主力C3', 'C', 6000),
+    ch('c6', 'p6', '混子C1', 'C', 1800),
+    ch('c7', 'p7', '混子C2', 'C', 1500),
+    ch('c8', 'p8', '混子C3', 'C', 1200),
+    ch('n1', 'p9', '大奶', 'N', 60000),
+    ch('n2', 'p10', '二奶', 'N', 50000),
+    ch('n3', 'p11', '三奶', 'N', 40000),
+    ch('n4', 'p12', '四奶', 'N', 30000),
+  ]
+  const config = makeConfig({
+    globalLayout: 'auto',
+    ranges: {
+      red: { c: range(8000) },
+      yellow: { c: range(5000, 8000) },
+      green: { c: range(null, 5000) },
+    },
+  })
+  const { slots, notes } = autoAssign(pool, config)
+  const byId = new Map(pool.map((c) => [c.id, c]))
+  const healCount = (id) => slots[id].filter((sl) => sl.role === 'N').length
+  const cCount = (id) => slots[id].filter((sl) => sl.role === 'C').length
+  const panels = (id, role) =>
+    slots[id].filter((sl) => sl.role === role && sl.characterId).map((sl) => byId.get(sl.characterId).panel)
+
+  ok('红队自动改双奶（区间内只有 2 个 C）', healCount('red') === 2 && cCount('red') === 2, `红队 ${healCount('red')}奶${cCount('red')}C`)
+  ok('红队给出自动改配置的说明', typeof notes.red === 'string' && notes.red.includes('双奶'), notes.red || '(无)')
+  ok(
+    '红队两个位置都是主力 C（12000 / 11000），没有混子',
+    JSON.stringify(panels('red', 'C').sort((a, b) => b - a)) === JSON.stringify([12000, 11000]),
+    panels('red', 'C').join(','),
+  )
+  ok('红队 4 个位置都坐满（没有空位）', slots.red.every((sl) => sl.characterId))
+  ok('黄队区间内够 3 个 C → 保持单奶 1奶3C', healCount('yellow') === 1 && cCount('yellow') === 3, `黄队 ${healCount('yellow')}奶${cCount('yellow')}C`)
+  ok(
+    '黄队拿到三个次主力 C（7000 / 6500 / 6000）',
+    JSON.stringify(panels('yellow', 'C').sort((a, b) => b - a)) === JSON.stringify([7000, 6500, 6000]),
+    panels('yellow', 'C').join(','),
+  )
+  ok('绿队作为混子队保持单奶带满', healCount('green') === 1 && cCount('green') === 3, `绿队 ${healCount('green')}奶${cCount('green')}C`)
+  ok(
+    '混子都进了绿队（1800 / 1500 / 1200）',
+    JSON.stringify(panels('green', 'C').sort((a, b) => b - a)) === JSON.stringify([1800, 1500, 1200]),
+    panels('green', 'C').join(','),
+  )
+  ok(
+    '红黄两队都没有伤害过低的角色（无区间外）',
+    [...slots.red, ...slots.yellow].every((sl) => !sl.outOfRange),
+  )
+  ok('一共 12 个位置', Object.values(slots).flat().length === 12)
+
+  // 奶不够时不该强行双奶：只留 3 个奶 → 三队各 1 个
+  const fewHeals = pool.filter((c) => c.type === 'C' || ['n1', 'n2', 'n3'].includes(c.id))
+  const tight = autoAssign(fewHeals, config)
+  ok(
+    '奶不够时退回单奶（3 个奶分给三队）',
+    ['red', 'yellow', 'green'].every((id) => tight.slots[id].filter((sl) => sl.role === 'N').length === 1),
+    ['red', 'yellow', 'green'].map((id) => tight.slots[id].filter((sl) => sl.role === 'N').length).join(','),
+  )
+
+  // 显式指定单奶时算法不改配置，且照旧兜底补位
+  const explicit = autoAssign(pool, makeConfig({
+    globalLayout: 'auto',
+    ranges: { red: { c: range(8000) } },
+    layouts: { red: '1n3c' },
+  }))
+  ok(
+    '显式指定单奶时算法不改配置（且允许兜底补位）',
+    explicit.slots.red.filter((sl) => sl.role === 'N').length === 1 &&
+      explicit.slots.red.filter((sl) => sl.role === 'C' && sl.characterId).length === 3,
+  )
+
+  // 双奶队合计目标按 2/3 折算
+  const scaled = effectiveTotalRange(range(24000, 30000), 2)
+  ok('双奶队合计目标折算为 2/3', scaled.min === 16000 && scaled.max === 20000, JSON.stringify(scaled))
+  const summary = teamSummary(slots.red, byId, range(15000, 18000))
+  ok(
+    '双奶队合计达标判定用折算后的目标',
+    summary.cTarget.min === 10000 && summary.cTarget.max === 12000,
+    JSON.stringify(summary.cTarget),
+  )
 }
 
 console.log(`\n结果：${pass}/${pass + failures.length} 通过`)

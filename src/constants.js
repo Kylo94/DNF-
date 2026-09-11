@@ -75,6 +75,17 @@ export const TEAM_LAYOUTS = [
   },
 ]
 
+/** 「队内配置」下拉选项：自动 / 单奶 / 双奶 */
+export const LAYOUT_OPTIONS = [
+  {
+    value: 'auto',
+    label: '自动配置（推荐）',
+    short: '自动',
+    desc: '红/黄队凑不满 C 单角色区间时自动改双奶，宁可少一个位置也不上伤害过低的角色；绿队作为混子队保持单奶带满',
+  },
+  ...TEAM_LAYOUTS,
+]
+
 /** 双奶时两个奶位的语义（顺序与槽位一致，面板高的自动放常驻位） */
 export const HEAL_SLOT_LABELS = ['常驻奶', '太阳奶']
 

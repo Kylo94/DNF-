@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { TEAM_LAYOUTS } from '../../constants.js'
+import { LAYOUT_OPTIONS } from '../../constants.js'
 
 const props = defineProps({
   teamConfigs: { type: Array, default: () => [] },
@@ -12,7 +12,7 @@ const props = defineProps({
 const emit = defineEmits(['team-layout', 'range', 'auto-band', 'reset-ranges'])
 
 const globalLabel = computed(() => {
-  const meta = TEAM_LAYOUTS.find((l) => l.value === props.globalLayout)
+  const meta = LAYOUT_OPTIONS.find((l) => l.value === props.globalLayout)
   return meta ? meta.short : ''
 })
 
@@ -61,7 +61,9 @@ function onLayoutChange(teamId, event) {
             @change="onLayoutChange(team.id, $event)"
           >
             <option value="global">跟随全局（{{ globalLabel }}）</option>
-            <option v-for="l in TEAM_LAYOUTS" :key="l.value" :value="l.value">{{ l.short }}（{{ l.label }}）</option>
+            <option v-for="l in LAYOUT_OPTIONS" :key="l.value" :value="l.value" :title="l.desc">
+              {{ l.short }}（{{ l.label }}）
+            </option>
           </select>
         </label>
 

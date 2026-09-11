@@ -85,7 +85,7 @@ export function buildLineupSheet({ waves, teamConfigs, byId, bench = [] }) {
           character && character.panel !== null ? Number(character.panel) : '',
           character ? (slot.outOfRange ? '区间外' : '正常') : '空位',
           '',
-          first ? layoutLabel(config.layout) : '',
+          first ? layoutLabel(config.ownLayout) : '',
           first ? rangeCell(config.cRange?.min) : '',
           first ? rangeCell(config.cRange?.max) : '',
           first ? rangeCell(config.cTotalRange?.min) : '',
@@ -154,6 +154,8 @@ function slotPositionLabel(slot, index, layout) {
 }
 
 function layoutLabel(layout) {
+  if (!layout) return '跟随全局'
+  if (layout === 'auto') return '自动配置'
   const meta = TEAM_LAYOUTS.find((l) => l.value === layout) || TEAM_LAYOUTS[0]
   return `${meta.label}（${meta.short}）`
 }
@@ -253,10 +255,12 @@ function mapTeamId(value) {
 
 function mapLayout(value) {
   const text = String(value ?? '').trim()
-  if (!text) return null
+  if (!text) return undefined
+  if (text.includes('跟随全局') || text.includes('全局')) return null
+  if (text.includes('自动')) return 'auto'
   if (text.includes('双奶') || normalizeHeaderCell(text).includes('2n2c') || text.includes('2奶')) return '2n2c'
   if (text.includes('单奶') || normalizeHeaderCell(text).includes('1n3c') || text.includes('1奶')) return '1n3c'
-  return null
+  return undefined
 }
 
 /** 字符串里的波次序号（第一波 / 第1波 / 1） */
@@ -388,7 +392,7 @@ export function extractLineup(rows, teamLayouts = {}) {
     // 区间配置（每队第一行才有值）
     const layoutValue = mapLayout(cellAt('layout'))
     const target = config[teamId]
-    if (layoutValue) target.layout = layoutValue
+    if (layoutValue !== undefined) target.layout = layoutValue
     const setRange = (field, bound, key2) => {
       const raw = cellAt(field)
       if (raw === null || raw === undefined || String(raw).trim() === '') return
@@ -409,10 +413,11 @@ export function extractLineup(rows, teamLayouts = {}) {
       const teams = {}
       for (const team of TEAMS) {
         const entries = wave.teams[team.id] || []
-        const healCount = entries.filter((e) => e.role === 'N').length
-        // 槽位模板优先用配置里的队内配置，其次按实际奶位数推断
-        const layout = config[team.id].layout || (healCount >= 2 ? '2n2c' : teamLayouts[team.id] || '1n3c')
-        if (!config[team.id].layout) config[team.id].layout = layout
+        const healRows = entries.filter((e) => e.role === 'N').length
+        // 槽位模板按表里实际写出的位置还原（自动双奶的波次也是 2奶2C，不会丢人）
+        const rowLayout = healRows >= 2 ? '2n2c' : healRows === 1 ? '1n3c' : null
+        const configured = config[team.id].layout
+        const layout = rowLayout || (configured && configured !== 'auto' ? configured : teamLayouts[team.id] || '1n3c')
         const template = layoutSlots(layout)
         const slots = template.map((s, index) => {
           const sameRole = entries.filter((e) => e.role === s.role)
@@ -426,7 +431,13 @@ export function extractLineup(rows, teamLayouts = {}) {
     })
 
   // 完全没有配置信息就不用覆盖现有配置
-  const hasConfig = TEAMS.some((t) => config[t.id].layout || config[t.id].cRange.min !== null || config[t.id].nRange.min !== null || config[t.id].cTotalRange.min !== null)
+  const hasConfig = TEAMS.some(
+    (t) =>
+      config[t.id].layout !== null ||
+      config[t.id].cRange.min !== null ||
+      config[t.id].nRange.min !== null ||
+      config[t.id].cTotalRange.min !== null,
+  )
   return { waves: result, config: hasConfig ? config : null, unmatched, undeployed }
 }
 
@@ -464,7 +475,10 @@ function sheetLooksLikeRoster(rows) {
 export function parseWorkbookFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onerror = () => reject(new Error('文件读取失败，请重试'))
+    reader.onerror = () => {
+      console.warn('读取文件失败：', reader.error, file?.name, file?.size)
+      reject(new Error('文件读取失败，请重试'))
+    }
     reader.onload = (event) => {
       try {
         const data = new Uint8Array(event.target.result)

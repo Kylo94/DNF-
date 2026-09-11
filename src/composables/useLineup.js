@@ -29,7 +29,7 @@ function emptyRange() {
   return { min: null, max: null }
 }
 
-function makeConfig(layout = '1n3c') {
+function makeConfig(layout = 'auto') {
   return {
     red: { layout: null, cRange: emptyRange(), cTotalRange: emptyRange(), nRange: emptyRange() },
     yellow: { layout: null, cRange: emptyRange(), cTotalRange: emptyRange(), nRange: emptyRange() },
@@ -45,8 +45,8 @@ function emptyTeams(layout = '1n3c') {
   return teams
 }
 
-function makeWave(difficulty = DIFFICULTIES[0], layout = '1n3c') {
-  return { id: uid(), difficulty, teams: emptyTeams(layout) }
+function makeWave(difficulty = DIFFICULTIES[0], layout = 'auto') {
+  return { id: uid(), difficulty, teams: emptyTeams(layout), notes: {} }
 }
 
 function defaultState() {
@@ -54,7 +54,7 @@ function defaultState() {
     version: 2,
     displayFormat: 'player-name-value',
     defaultDifficulty: DIFFICULTIES[0],
-    globalLayout: '1n3c',
+    globalLayout: 'auto',
     config: makeConfig(),
     waves: [makeWave()],
     activeWave: 0,
@@ -101,6 +101,7 @@ function normalizeWaves(raw) {
     id: wave.id || uid(),
     difficulty: DIFFICULTIES.includes(wave.difficulty) ? wave.difficulty : DIFFICULTIES[0],
     teams: Object.fromEntries(TEAMS.map((t) => [t.id, normalizeSlots(wave.teams?.[t.id])])),
+    notes: wave.notes && typeof wave.notes === 'object' ? { ...wave.notes } : {},
   }))
 }
 
@@ -337,6 +338,8 @@ export function useLineup() {
       for (const team of TEAMS) {
         const config = state.config[team.id]
         const effective = resolveLayout(config, state.globalLayout)
+        // 「自动配置」由算法按波次决定，槽位以现有数据为准，不要重建
+        if (effective === 'auto') continue
         const currentRoles = wave.teams[team.id].map((s) => s.role).join('')
         const targetRoles = layoutSlots(effective).map((s) => s.role).join('')
         if (currentRoles !== targetRoles) rebuildSlots(wave, team.id, effective)
@@ -357,8 +360,9 @@ export function useLineup() {
 
   function fillWave(wave, usedElsewhere) {
     const pool = (poolsByDifficulty.value[wave.difficulty] || []).filter((c) => !usedElsewhere.has(c.id))
-    const { slots } = autoAssign(pool, { globalLayout: state.globalLayout, teams: teamsPayload.value })
+    const { slots, notes } = autoAssign(pool, { globalLayout: state.globalLayout, teams: teamsPayload.value })
     for (const team of TEAMS) wave.teams[team.id] = slots[team.id]
+    wave.notes = notes || {}
     refreshWaveFlags(wave)
     return wave
   }
@@ -384,8 +388,9 @@ export function useLineup() {
     const used = new Set()
     for (const wave of waves) {
       const pool = (poolsByDifficulty.value[wave.difficulty] || []).filter((c) => !used.has(c.id))
-      const { slots } = autoAssign(pool, { globalLayout: state.globalLayout, teams: teamsPayload.value })
+      const { slots, notes } = autoAssign(pool, { globalLayout: state.globalLayout, teams: teamsPayload.value })
       for (const team of TEAMS) wave.teams[team.id] = slots[team.id]
+      wave.notes = notes || {}
       refreshWaveFlags(wave)
       for (const list of Object.values(wave.teams)) {
         for (const slot of list) if (slot.characterId) used.add(slot.characterId)
@@ -483,6 +488,7 @@ export function useLineup() {
   function setGlobalLayout(value) {
     if (state.globalLayout === value) return
     state.globalLayout = value
+    for (const wave of state.waves) wave.notes = {}
     syncLayouts()
     state.configDirty = true
   }
@@ -491,8 +497,10 @@ export function useLineup() {
     const config = state.config[teamId]
     if (config.layout === layout) return
     config.layout = layout
+    for (const wave of state.waves) delete wave.notes?.[teamId]
     const effective = resolveLayout(config, state.globalLayout)
     for (const wave of state.waves) {
+      if (effective === 'auto') continue
       const currentRoles = wave.teams[teamId].map((s) => s.role).join('')
       const targetRoles = layoutSlots(effective).map((s) => s.role).join('')
       if (currentRoles !== targetRoles) rebuildSlots(wave, teamId, effective)

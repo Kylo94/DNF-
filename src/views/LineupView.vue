@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import WaveRow from '../components/lineup/WaveRow.vue'
 import TeamSettings from '../components/lineup/TeamSettings.vue'
 import BenchPanel from '../components/lineup/BenchPanel.vue'
-import { DIFFICULTIES, MAX_WAVES, RAID_SIZE, TEAM_LAYOUTS, TEAMS, waveName } from '../constants.js'
+import { DIFFICULTIES, LAYOUT_OPTIONS, MAX_WAVES, RAID_SIZE, TEAMS, waveName } from '../constants.js'
 import { useLineup } from '../composables/useLineup.js'
 import { useToast } from '../composables/useToast.js'
 import { DISPLAY_FORMATS, characterText } from '../utils/display.js'
@@ -73,7 +73,7 @@ const sortedWarnings = computed(() => {
 })
 
 const errorCount = computed(() => warnings.value.filter((w) => w.level === 'error').length)
-const layoutMeta = computed(() => TEAM_LAYOUTS.find((l) => l.value === state.globalLayout))
+const layoutMeta = computed(() => LAYOUT_OPTIONS.find((l) => l.value === state.globalLayout))
 const overallLabel = computed(
   () => `已排 ${overallStats.value.used} / ${overallStats.value.totalCharacters} 人 · 共 ${overallStats.value.waves} 波`,
 )
@@ -134,7 +134,7 @@ function handleClearAll() {
 function handleGlobalLayout(value) {
   if (state.globalLayout === value) return
   setGlobalLayout(value)
-  toast(`全局配置切换为 ${TEAM_LAYOUTS.find((l) => l.value === value)?.short}`, 'info')
+  toast(`全局配置切换为 ${LAYOUT_OPTIONS.find((l) => l.value === value)?.short}`, 'info')
 }
 
 /* ------------------------- 单波操作 ------------------------- */
@@ -273,7 +273,9 @@ function handleSwapHeals(teamId) {
           :value="state.globalLayout"
           @change="handleGlobalLayout($event.target.value)"
         >
-          <option v-for="l in TEAM_LAYOUTS" :key="l.value" :value="l.value">{{ l.label }}（{{ l.short }}）</option>
+          <option v-for="l in LAYOUT_OPTIONS" :key="l.value" :value="l.value" :title="l.desc">
+            {{ l.label }}（{{ l.short }}）
+          </option>
         </select>
       </div>
 
@@ -381,6 +383,8 @@ function handleSwapHeals(teamId) {
           :assigned="waveAssigned[index]"
           :total="RAID_SIZE"
           :warn-count="waveWarnCount[index]"
+          :notes="wave.notes || {}"
+          :global-layout="state.globalLayout"
           @slot-click="onSlotClick"
           @slot-drop="onSlotDrop"
           @drag-start="onDragStart"

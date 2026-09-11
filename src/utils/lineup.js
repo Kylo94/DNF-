@@ -19,6 +19,7 @@ const MAX_CANDIDATES = 42
 
 /** 根据队伍配置生成槽位模板 */
 export function layoutSlots(layout) {
+  // 'auto' 先按单奶模板占位，分配时再由算法决定是否切成双奶
   const meta = TEAM_LAYOUTS.find((l) => l.value === layout) || TEAM_LAYOUTS[0]
   const slots = []
   for (let i = 0; i < meta.healSlots; i += 1) slots.push({ role: 'N' })
@@ -26,9 +27,18 @@ export function layoutSlots(layout) {
   return slots
 }
 
-/** 队伍实际生效的配置：自身设置优先，否则跟随全局 */
+/** 「自动配置」：由算法决定这一队用单奶还是双奶 */
+export const LAYOUT_AUTO = 'auto'
+
+/** 队伍实际生效的配置：自身设置优先，否则跟随全局；可能是 'auto' */
 export function resolveLayout(team, globalLayout) {
-  return team.layout || globalLayout
+  const value = team.layout || globalLayout
+  if (value === LAYOUT_AUTO) return LAYOUT_AUTO
+  return value === '2n2c' ? '2n2c' : '1n3c'
+}
+
+export function isAutoLayout(team, globalLayout) {
+  return resolveLayout(team, globalLayout) === LAYOUT_AUTO
 }
 
 export function normalizeRange(range) {
@@ -57,6 +67,18 @@ export function rangeDistance(value, range) {
   return 0
 }
 
+/**
+ * 「C 合计伤害」目标按实际 C 位数折算：
+ * 配置里的目标是按单奶（3 个 C）填的，双奶只有 2 个 C，按 2/3 折算比较才公平
+ */
+export function effectiveTotalRange(range, cSlots) {
+  const base = normalizeRange(range)
+  if (!hasRange(base) || !cSlots || cSlots === 3) return base
+  const factor = cSlots / 3
+  const scale = (value) => (value === null ? null : Math.round(value * factor))
+  return { min: scale(base.min), max: scale(base.max) }
+}
+
 export function formatRange(range) {
   if (!hasRange(range)) return '不限'
   const { min, max } = range
@@ -71,6 +93,16 @@ export function formatNumber(n) {
 
 function sortByPanelDesc(list) {
   return [...list].sort((a, b) => (b.panel ?? Number.NEGATIVE_INFINITY) - (a.panel ?? Number.NEGATIVE_INFINITY))
+}
+
+/** 同一波里一个玩家只能上一个角色，所以候选里每位玩家只保留最强的那个 */
+function bestPerPlayer(list) {
+  const seen = new Set()
+  return sortByPanelDesc(list).filter((c) => {
+    if (seen.has(c.player)) return false
+    seen.add(c.player)
+    return true
+  })
 }
 
 /** 候选人数过多时等距抽样，保留最强与最弱的，控制枚举规模 */
@@ -178,87 +210,161 @@ export function chooseCombination(candidates, k, totalRange = { min: null, max: 
  * @returns {{slots: Record<string, Array<{role:string, characterId:string|null, outOfRange:boolean}>>}}
  */
 export function autoAssign(pool, config) {
-  const teams = config.teams.map((t) => ({ ...t, layout: resolveLayout(t, config.globalLayout) }))
+  const teams = config.teams.map((t, index) => ({
+    ...t,
+    index,
+    isLastTeam: index === config.teams.length - 1,
+    layout: resolveLayout(t, config.globalLayout),
+  }))
   const slots = {}
+  const notes = {}
   for (const t of teams) {
-    slots[t.id] = layoutSlots(t.layout).map((s) => ({ role: s.role, characterId: null, outOfRange: false }))
+    slots[t.id] = layoutSlots(t.layout === LAYOUT_AUTO ? '1n3c' : t.layout).map((s) => ({
+      role: s.role,
+      characterId: null,
+      outOfRange: false,
+    }))
   }
 
   const assigned = new Set()
   const usedPlayers = new Set()
 
-  const rangeOf = (team, role) => normalizeRange(role === 'N' ? team.nRange : team.cRange)
   const candidates = (role) =>
     pool.filter((c) => c.type === role && !assigned.has(c.id) && !usedPlayers.has(c.player))
 
-  const mark = (character, slot, range, loose) => {
+  const mark = (character, slot, range) => {
     slot.characterId = character.id
-    slot.outOfRange = Boolean(loose && hasRange(range) && !inRange(character.panel, range))
+    slot.outOfRange = hasRange(range) && !inRange(character.panel, range)
     assigned.add(character.id)
     usedPlayers.add(character.player)
   }
 
-  /* ---- 奶位优先：先保证每队都有奶 ---- */
-  const strictHeal = () => {
-    for (const team of teams) {
-      const range = rangeOf(team, 'N')
-      for (const slot of slots[team.id]) {
-        if (slot.role !== 'N' || slot.characterId) continue
-        const list = candidates('N').filter((c) => inRange(c.panel, range))
-        if (!list.length) continue
-        mark(sortByPanelDesc(list)[0], slot, range, false)
-      }
+  /** 按「离区间最近，其次数值最高」排序 */
+  const byRangeCloseness = (list, range) =>
+    [...list].sort((a, b) => {
+      const diff = rangeDistance(a.panel, range) - rangeDistance(b.panel, range)
+      if (diff !== 0) return diff
+      return (b.panel ?? Number.NEGATIVE_INFINITY) - (a.panel ?? Number.NEGATIVE_INFINITY)
+    })
+
+  /** 分配一个奶位：优先区间内面板最高的，其次离区间最近的 */
+  function fillHealSlot(team, slot) {
+    const range = normalizeRange(team.nRange)
+    const inRangeList = sortByPanelDesc(candidates('N').filter((c) => inRange(c.panel, range)))
+    if (inRangeList.length) {
+      mark(inRangeList[0], slot, range)
+      return true
     }
-  }
-  const looseHeal = () => {
-    for (const team of teams) {
-      const range = rangeOf(team, 'N')
-      for (const slot of slots[team.id]) {
-        if (slot.role !== 'N' || slot.characterId) continue
-        const list = candidates('N')
-        if (!list.length) continue
-        list.sort((a, b) => {
-          const diff = rangeDistance(a.panel, range) - rangeDistance(b.panel, range)
-          if (diff !== 0) return diff
-          return (b.panel ?? Number.NEGATIVE_INFINITY) - (a.panel ?? Number.NEGATIVE_INFINITY)
-        })
-        mark(list[0], slot, range, true)
-      }
-    }
+    const rest = candidates('N')
+    if (!rest.length) return false
+    mark(byRangeCloseness(rest, range)[0], slot, range)
+    return true
   }
 
-  /** C 位：整队一起挑，凑「合计伤害区间」 */
-  const fillC = (strict) => {
-    for (const team of teams) {
-      const charRange = rangeOf(team, 'C')
-      const totalRange = normalizeRange(team.cTotalRange)
-      const cSlots = slots[team.id].filter((s) => s.role === 'C' && !s.characterId)
-      if (!cSlots.length) continue
+  /** 该队改双奶是否负担得起：除了自己第 2 个奶，还要给后面每队留 1 个奶 */
+  function canAffordSecondHeal(team) {
+    const teamsAfter = teams.filter((t) => t.index > team.index).length
+    // 调用时本队第 1 个奶已经就位，所以只需再留：自己第 2 个奶 + 后面每队至少 1 个奶
+    return candidates('N').length >= 1 + teamsAfter
+  }
 
-      let list = candidates('C')
-      if (strict) {
-        list = list.filter((c) => inRange(c.panel, charRange))
-        if (!list.length) continue
-      } else if (!list.length) {
-        continue
+  /**
+   * 估算「区间内还能用几个 C」。
+   * 双奶会多占一个玩家的名额，所以把第 2 个奶的玩家也预先排除掉，
+   * 否则判定会高估可用 C 的数量（奶位会抢走强 C 的玩家）。
+   */
+  const countInRangeC = (team) => {
+    const range = normalizeRange(team.cRange)
+    const excluded = new Set()
+    if (canAffordSecondHeal(team)) {
+      const nRange = normalizeRange(team.nRange)
+      const pool2 = candidates('N')
+      const secondHeal = sortByPanelDesc(pool2.filter((c) => inRange(c.panel, nRange)))[0] || byRangeCloseness(pool2, nRange)[0]
+      if (secondHeal) excluded.add(secondHeal.player)
+    }
+    return bestPerPlayer(candidates('C').filter((c) => !excluded.has(c.player) && inRange(c.panel, range))).length
+  }
+
+  for (const team of teams) {
+    const isAuto = team.layout === LAYOUT_AUTO
+    const baseLayout = isAuto ? '1n3c' : team.layout
+
+    // 槽位模板按基础配置生成，奶位优先填
+    slots[team.id] = layoutSlots(baseLayout).map((s) => ({ role: s.role, characterId: null, outOfRange: false }))
+    for (const slot of slots[team.id]) {
+      if (slot.role === 'N') fillHealSlot(team, slot)
+    }
+
+    // 自动配置：奶定下来之后再决定这一队要不要改双奶（此时可用 C 的估算才准）
+    if (isAuto && decideLayout(team) === '2n2c') {
+      const kept = slots[team.id]
+        .filter((s) => s.role === 'N' && s.characterId)
+        .map((s) => ({ characterId: s.characterId, outOfRange: s.outOfRange }))
+      slots[team.id] = layoutSlots('2n2c').map((s) => ({ role: s.role, characterId: null, outOfRange: false }))
+      const healSlots = slots[team.id].filter((s) => s.role === 'N')
+      kept.forEach((item, index) => {
+        if (!healSlots[index]) return
+        healSlots[index].characterId = item.characterId
+        healSlots[index].outOfRange = item.outOfRange
+      })
+      for (const slot of healSlots) {
+        if (!slot.characterId) fillHealSlot(team, slot)
       }
+    }
 
-      const combo = chooseCombination(list, cSlots.length, totalRange)
-      if (!combo || !combo.length) continue
-      const sortedCombo = sortByPanelDesc(combo)
+    // 2) C 位：整队一起挑，凑「合计伤害区间」（双奶按 2 个 C 折算目标）
+    const charRange = normalizeRange(team.cRange)
+    const cSlots = slots[team.id].filter((s) => s.role === 'C')
+    if (cSlots.length) {
+      const totalRange = effectiveTotalRange(normalizeRange(team.cTotalRange), cSlots.length)
+      // 自动配置下的主力队（红/黄）：只放区间内的 C —— 宁可留空位或改双奶，也不上伤害过低的角色；
+      // 混子队（最后一队）和团长显式指定的配置：照旧兜底补位，避免空位。
+      const allC = bestPerPlayer(candidates('C'))
+      const inRangeList = allC.filter((c) => inRange(c.panel, charRange))
+      // 自动模式的主力队只吃区间内的 C；但如果区间内的角色已经全被前面的波次用完
+      // （inRange === 0 → 这一波注定是混子波），就照旧补满，避免整波空着。
+      const allowLoose = team.layout !== LAYOUT_AUTO || team.isLastTeam || inRangeList.length === 0
+      let chosen = []
+      if (inRangeList.length >= cSlots.length) {
+        // 区间内够人：整队一起凑「合计伤害区间」
+        chosen = chooseCombination(inRangeList, cSlots.length, totalRange) || []
+      } else if (allowLoose) {
+        // 团长显式指定了配置，或这是混子队：区间内先上，不够再用离区间最近的补
+        const rest = byRangeCloseness(allC.filter((c) => !inRange(c.panel, charRange)), charRange)
+        chosen = [...inRangeList, ...rest].slice(0, cSlots.length)
+      } else {
+        // 自动配置下的主力队（红/黄）：只放区间内的 C，宁可留空位也不上伤害过低的角色
+        chosen = inRangeList.slice(0, cSlots.length)
+        if (chosen.length < cSlots.length) {
+          notes[team.id] =
+            `${team.name}：区间内只有 ${inRangeList.length} 个可用 C，保留 ${cSlots.length - chosen.length} 个空位` +
+            '（可手动补人、调整区间，或把该队改成单奶）'
+        }
+      }
+      const sortedChosen = sortByPanelDesc(chosen)
       cSlots.forEach((slot, index) => {
-        const character = sortedCombo[index]
-        if (character) mark(character, slot, charRange, !strict)
+        const character = sortedChosen[index]
+        if (character) mark(character, slot, charRange)
       })
     }
   }
 
-  strictHeal()
-  looseHeal()
-  fillC(true)
-  fillC(false)
+  /** 自动配置的判定：红/黄保强度（宁可双奶也不上过低的 C），最后一队是混子队保持单奶 */
+  function decideLayout(team) {
+    if (team.isLastTeam) return '1n3c'
+    const inRange = countInRangeC(team)
+    // 区间内一个都没有：说明这一波只剩混子，双奶也保不住强度，直接单奶补满
+    if (inRange === 0) return '1n3c'
+    const missingInSingle = Math.max(0, 3 - inRange)
+    const missingInDouble = Math.max(0, 2 - inRange)
+    if (missingInDouble < missingInSingle && canAffordSecondHeal(team)) {
+      notes[team.id] = `${team.name}：区间内只有 ${inRange} 个 C，自动改用双奶（2奶2C），避免上伤害过低的角色`
+      return '2n2c'
+    }
+    return '1n3c'
+  }
 
-  return { slots }
+  return { slots, notes }
 }
 
 /**
@@ -338,7 +444,7 @@ export function teamSummary(slots, byId, cTotalRange = { min: null, max: null })
   const ns = filled.filter((s) => s.role === 'N').map((s) => byId.get(s.characterId)).filter(Boolean)
   const cSlots = slots.filter((s) => s.role === 'C').length
   const cTotal = cs.reduce((sum, c) => sum + (Number.isFinite(c.panel) ? c.panel : 0), 0)
-  const target = normalizeRange(cTotalRange)
+  const target = effectiveTotalRange(cTotalRange, cSlots)
   const targetReady = hasRange(target) && cs.length === cSlots && cSlots > 0
   return {
     filled: filled.length,

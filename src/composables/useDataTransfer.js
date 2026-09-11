@@ -30,10 +30,17 @@ export function useDataTransfer() {
   /** 把排表里的「玩家+角色称呼」对应回已登记的角色 id */
   function bindLineup(parsed) {
     if (!parsed?.waves) return null
+    // 同一个玩家可能有多个同名角色，所以每个 key 存一组 id，按出现顺序依次绑定
     const byKey = new Map()
     for (const character of characters.value) {
       const key = `${character.player}|${character.name}`.toLowerCase()
-      if (!byKey.has(key)) byKey.set(key, character.id)
+      if (!byKey.has(key)) byKey.set(key, [])
+      byKey.get(key).push(character.id)
+    }
+    const takeId = (key) => {
+      const list = byKey.get(key)
+      if (!list || !list.length) return null
+      return list.shift()
     }
     let unmatched = 0
     const waves = parsed.waves.map((wave) => {
@@ -41,7 +48,7 @@ export function useDataTransfer() {
       for (const [teamId, slots] of Object.entries(wave.teams)) {
         teams[teamId] = slots.map((slot) => {
           if (!slot.player || !slot.name) return { role: slot.role, characterId: null, outOfRange: false }
-          const id = byKey.get(`${slot.player}|${slot.name}`.toLowerCase())
+          const id = takeId(`${slot.player}|${slot.name}`.toLowerCase())
           if (!id) {
             unmatched += 1
             return { role: slot.role, characterId: null, outOfRange: false, missing: `${slot.player}·${slot.name}` }

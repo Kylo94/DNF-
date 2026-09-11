@@ -25,9 +25,12 @@ function pickFile() {
 }
 
 async function onFileChange(event) {
-  const file = event.target.files?.[0]
-  event.target.value = ''
-  if (file) await dataTransfer.pickAndParse(file)
+  const input = event.target
+  const file = input.files?.[0]
+  if (!file) return
+  // 先读完文件再清空 input，否则浏览器可能提前释放文件句柄
+  await dataTransfer.pickAndParse(file)
+  input.value = ''
 }
 
 function handleExport() {

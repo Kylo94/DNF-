@@ -319,7 +319,46 @@ ok(
   ['red', 'yellow', 'green'].every((id) => lineup.waves[0].teams[id].some((s) => s.role === 'N' && s.characterId)),
 )
 
-// --- 合计伤害目标 ---
+// --- 自动配置（混子玩法）---
+ok(
+  '全局配置默认为「自动」',
+  (await page.$eval('[data-testid="select-global-layout"]', (el) => el.value)) === 'auto',
+  await page.$eval('[data-testid="select-global-layout"]', (el) => el.value),
+)
+// 先按当前角色池自动分档（红/黄/绿各自一个区间），再重排，才能看出"自动双奶"
+await page.click('[data-testid="btn-auto-band"]')
+await sleep(400)
+await page.click('[data-testid="btn-assign"]')
+await sleep(1500)
+lineup = await readLineup()
+const autoDoubleHeal = lineup.waves.filter((w) => w.teams.red.filter((s) => s.role === 'N').length === 2)
+ok(
+  '红队自动改双奶（区间内 C 不足时不再硬塞弱 C）',
+  autoDoubleHeal.length > 0,
+  `${autoDoubleHeal.length} / ${lineup.waves.length} 波是双奶`,
+)
+if (autoDoubleHeal.length) {
+  const waveIndex = lineup.waves.indexOf(autoDoubleHeal[0])
+  ok('自动改配置的说明写在对应波次上', Boolean(lineup.waves[waveIndex].notes?.red), lineup.waves[waveIndex].notes?.red || '(无)')
+  const redPanels = autoDoubleHeal[0].teams.red
+    .filter((s) => s.role === 'C' && s.characterId)
+    .map((s) => rosterById.get(s.characterId).panel)
+  ok(
+    '双奶的红队没有伤害过低的 C（C 位无区间外）',
+    autoDoubleHeal[0].teams.red.filter((s) => s.role === 'C').every((s) => !s.outOfRange),
+    redPanels.join(','),
+  )
+  ok('页面用「2奶2C·自动」标出该队', (await uiText(`[data-testid="wave-row-${waveIndex}"]`)).includes('自动'), `第 ${waveIndex + 1} 行`)
+}
+
+// --- 合计伤害目标（先把红队固定成单奶、清掉 C 单角色区间，专测组合搜索）---
+await page.select('[data-testid="layout-red"]', '1n3c')
+await setRange('red', 'C', 'min', '')
+await setRange('red', 'C', 'max', '')
+await sleep(300)
+await page.click('[data-testid="btn-assign-wave-0"]')
+await sleep(700)
+lineup = await readLineup()
 const redTotalBefore = lineup.waves[0].teams.red
   .filter((s) => s.role === 'C' && s.characterId)
   .reduce((sum, s) => sum + rosterById.get(s.characterId).panel, 0)
@@ -347,6 +386,8 @@ const redTotalLow = lineup.waves[0].teams.red
 ok('合计上限压低后不会再堆最强 C（伤害不过剩）', redTotalLow <= Math.round(redTotalBefore * 0.5), String(redTotalLow))
 await setRange('red', 'TOTAL', 'min', '')
 await setRange('red', 'TOTAL', 'max', '')
+await page.select('[data-testid="layout-red"]', 'global')
+await sleep(300)
 await page.click('[data-testid="btn-assign-wave-0"]')
 await sleep(600)
 
@@ -387,6 +428,8 @@ ok('辅助奶显示为绿色', healColor === 'rgb(52, 211, 153)', healColor)
 ok('输出C显示为蓝色（不与红黄绿队色冲突）', cColor === 'rgb(96, 165, 250)', cColor)
 
 // --- 手动增删角色 ---
+lineup = await readLineup()
+const removedId = lineup.waves[0].teams.red[firstSlotIndex].characterId
 await page.click(slotSel(0, 'red', firstSlotIndex))
 await page.hover(slotSel(0, 'red', firstSlotIndex))
 await page.click(`${slotSel(0, 'red', firstSlotIndex)} .mini-slot__remove`)
@@ -395,7 +438,11 @@ lineup = await readLineup()
 ok('✕ 可以把角色从队伍里删掉（回到未登场）', lineup.waves[0].teams.red[firstSlotIndex].characterId === null)
 ok('空位显示空位提示', (await uiText(slotSel(0, 'red', firstSlotIndex))).includes('空位'))
 const benchCountBefore = await page.$$eval('[data-testid="bench-chip"]', (els) => els.length)
-await page.evaluate(() => document.querySelector('[data-testid="bench-chip"]').click())
+const removedPlayer = rosterById.get(removedId).player
+await page.evaluate((player) => {
+  const chip = [...document.querySelectorAll('[data-testid="bench-chip"]')].find((c) => c.dataset.player === player)
+  if (chip) chip.click()
+}, removedPlayer)
 await page.click(slotSel(0, 'red', firstSlotIndex))
 await sleep(500)
 lineup = await readLineup()
@@ -430,16 +477,16 @@ ok(
   lineup.waves[emptyWaveIndex].teams.green[tgtSlotIndex].characterId === movingId,
 )
 ok('第一波原位置变成空位', lineup.waves[0].teams.red[srcSlotIndex].characterId === null)
-ok(
-  '跨波移动后每一波依然没有同玩家重复',
-  lineup.waves.every((wave) => {
+const dupWaves = lineup.waves
+  .map((wave, index) => {
     const players = Object.values(wave.teams)
       .flat()
       .filter((s) => s.characterId)
       .map((s) => rosterById.get(s.characterId).player)
-    return new Set(players).size === players.length
-  }),
-)
+    return new Set(players).size === players.length ? null : `第${index + 1}波(${players.join(',')})`
+  })
+  .filter(Boolean)
+ok('跨波移动后每一波依然没有同玩家重复', dupWaves.length === 0, dupWaves.slice(0, 3).join(' ; '))
 
 // 同玩家冲突的移动会被拒绝（把第一波的角色塞进一个满员波次）
 lineup = await readLineup()
@@ -602,7 +649,14 @@ if (exportFile) {
       .sort()
       .join(','),
   )
-  ok('导入后每一波的人员与导出前完全一致', JSON.stringify(beforeByWave) === JSON.stringify(afterByWave))
+  const waveDiffs = beforeByWave
+    .map((b, i) => (b === afterByWave[i] ? null : `第${i + 1}波 前[${b}] 后[${afterByWave[i]}]`))
+    .filter(Boolean)
+  ok(
+    '导入后每一波的人员与导出前完全一致',
+    waveDiffs.length === 0,
+    waveDiffs.slice(0, 2).join(' ;; ').slice(0, 300),
+  )
   await page.click('[data-testid="tab-lineup"]')
   await sleep(400)
 }
@@ -629,5 +683,5 @@ console.log(`\n结果：${results.length - problems.length}/${results.length} �
 if (problems.length) console.log('失败项：\n - ' + problems.join('\n - '))
 
 await browser.close()
-fs.rmSync(DL, { recursive: true, force: true })
+if (!process.env.KEEP_DL) fs.rmSync(DL, { recursive: true, force: true })
 process.exit(problems.length ? 1 : 0)
