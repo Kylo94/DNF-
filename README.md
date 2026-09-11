@@ -71,7 +71,9 @@ npm run release -- patch "说明" --push           # 发版并推送提交与标
 npm run release -- major "首个正式版" --stable    # 只有加 --stable 才允许升到 1.x
 ```
 
-> 脚本会把当前工作区的改动一起提交为 `chore(release): vX.Y.Z 内测版`。
+> - 脚本会把当前工作区的改动一起提交为 `chore(release): vX.Y.Z 内测版`
+> - 正在运行的 `npm run dev` 要重启一次才会显示新版本号（`npm run build` / `build:single` 产物不受影响）
+> - 内测版的标签建议在 GitHub 的 Releases 页面标记为 **Pre-release**
 
 ## Git 提交规范
 

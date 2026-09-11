@@ -152,4 +152,7 @@ console.log(`
   改动文件：
 ${staged.split('\n').map((f) => `    - ${f}`).join('\n')}
 ${wantPush ? '✓ 已推送到 origin' : `下一步推送：git push origin HEAD --follow-tags`}
+
+提示：正在运行的 npm run dev 需要重启才会显示新版本号（构建产物不受影响）；
+     内测版标签建议在 GitHub 的 Releases 页面标记为 Pre-release。
 `)
