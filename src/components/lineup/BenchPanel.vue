@@ -1,28 +1,30 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { BENCH_REASON_LABEL } from '../../constants.js'
-import { typeLabel } from '../../constants.js'
+import { BENCH_REASON_LABEL, DIFFICULTIES, typeLabel } from '../../constants.js'
 import { formatPanel } from '../../utils/format.js'
 
 const props = defineProps({
   bench: { type: Array, default: () => [] },
-  poolStats: { type: Object, default: () => ({ total: 0, c: 0, n: 0 }) },
+  /** 全部已登记角色数 */
+  totalCharacters: { type: Number, default: 0 },
+  /** 已排上场人数 */
   assignedCount: { type: Number, default: 0 },
-  raidSize: { type: Number, default: 12 },
-  difficulty: { type: String, default: '' },
-  waveName: { type: String, default: '' },
+  /** 全部波次的容量（波数 × 12） */
+  capacity: { type: Number, default: 0 },
 })
 
 const emit = defineEmits(['drag-start', 'drag-end', 'drop-bench', 'select'])
 
 const keyword = ref('')
 const onlyType = ref('all')
+const onlyDifficulty = ref('all')
 const dragOver = ref(false)
 
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   return props.bench.filter((item) => {
     if (onlyType.value !== 'all' && item.character.type !== onlyType.value) return false
+    if (onlyDifficulty.value !== 'all' && item.character.difficulty !== onlyDifficulty.value) return false
     if (kw && !`${item.character.player} ${item.character.name}`.toLowerCase().includes(kw)) return false
     return true
   })
@@ -39,18 +41,22 @@ function onDragStart(event, character) {
   <section class="bench card">
     <header class="bench__head">
       <div class="bench__title">
-        <h3>未上场角色</h3>
+        <h3>未登场角色</h3>
         <span class="muted">
-          所有波次都没排上的角色 · {{ difficulty }} 已登记 {{ poolStats.total }} 个（输出C {{ poolStats.c }} ·
-          辅助奶 {{ poolStats.n }}）· {{ waveName }}当前 {{ assignedCount }}/{{ raidSize }}
+          已登记 {{ totalCharacters }} 个 · 已排 {{ assignedCount }} / 容量 {{ capacity }} 个位 ·
+          当前未登场 {{ bench.length }} 个
         </span>
       </div>
       <div class="bench__filters">
-        <input v-model="keyword" type="search" placeholder="搜索玩家/角色…" />
-        <select v-model="onlyType">
+        <input v-model="keyword" type="search" data-testid="bench-search" placeholder="搜索玩家/角色…" />
+        <select v-model="onlyType" data-testid="bench-type">
           <option value="all">全部类型</option>
           <option value="C">输出C</option>
           <option value="N">辅助奶</option>
+        </select>
+        <select v-model="onlyDifficulty" data-testid="bench-difficulty">
+          <option value="all">全部难度</option>
+          <option v-for="d in DIFFICULTIES" :key="d" :value="d">{{ d }}</option>
         </select>
       </div>
     </header>
@@ -70,7 +76,10 @@ function onDragStart(event, character) {
           data-testid="bench-chip"
           :data-name="item.character.name"
           :data-player="item.character.player"
-          :class="[item.character.type === 'C' ? 'chip--c' : 'chip--n', { 'chip--conflict': item.reason === 'player-conflict' }]"
+          :class="[
+            item.character.type === 'C' ? 'chip--c' : 'chip--n',
+            { 'chip--conflict': item.reason === 'player-conflict' },
+          ]"
           draggable="true"
           @dragstart="onDragStart($event, item.character)"
           @dragend="emit('drag-end')"
@@ -80,6 +89,7 @@ function onDragStart(event, character) {
           <span class="chip__meta">{{ item.character.player }} · {{ formatPanel(item.character.panel) }}</span>
           <span class="chip__tags">
             <span class="tag">{{ typeLabel(item.character.type) }}</span>
+            <span class="tag tag--diff">{{ item.character.difficulty === '困难团' ? '困难' : '普通' }}</span>
             <span v-if="item.reason === 'player-conflict'" class="tag tag--warn2">
               {{ BENCH_REASON_LABEL[item.reason] }}
             </span>
@@ -87,17 +97,12 @@ function onDragStart(event, character) {
         </div>
       </template>
       <p v-else class="empty">
-        {{
-          bench.length
-            ? '没有符合筛选条件的角色'
-            : waveName + '的角色已全部排上（或还没有登记' + difficulty + '的角色）'
-        }}
+        {{ bench.length ? '没有符合筛选条件的角色' : '所有角色都已排进波次 🎉' }}
       </p>
     </div>
 
     <p class="bench__tip">
-      提示：把这里的角色拖到队伍空位即可上场（当前是{{ waveName }}）；把场上角色拖到此处即下场；跨波次可以把 A 波的角色直接拖到 B 波的位置。
-      也可以「先点场上位置、再点目标位置」完成移动/互换。
+      把这里的角色拖到任意一波的位置即可上场；把场上角色拖到此处即下场。也可以「先点位置、再点另一个位置」完成移动/互换，跨波次同样可以。
     </p>
   </section>
 </template>
@@ -143,7 +148,7 @@ function onDragStart(event, character) {
   flex-wrap: wrap;
   gap: 8px;
   min-height: 76px;
-  max-height: 330px;
+  max-height: 300px;
   overflow-y: auto;
   align-content: flex-start;
   padding: 10px;
@@ -173,7 +178,7 @@ function onDragStart(event, character) {
 }
 
 .chip--n {
-  border-left: 3px solid #4ade80;
+  border-left: 3px solid #34d399;
 }
 
 .chip--conflict {
@@ -203,6 +208,10 @@ function onDragStart(event, character) {
   font-size: 11px;
   color: var(--text-dim);
   border: 1px solid var(--border);
+}
+
+.tag--diff {
+  color: #cbd5e1;
 }
 
 .tag--warn2 {

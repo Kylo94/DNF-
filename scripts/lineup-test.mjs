@@ -107,7 +107,7 @@ console.log('=== 1. 单奶配置：区间分档 ===')
   ok('三个奶按分档落位：红60000 / 黄45000 / 绿30000', JSON.stringify(healPanels) === JSON.stringify([60000, 45000, 30000]), healPanels.join(','))
   ok('每队 1 奶 3C', TEAMS.every((t) => slots[t.id].filter((s) => s.role === 'N').length === 1))
 
-  const bench = computeBench(pool, [{ teams: slots }], 0, new Map(pool.map((c) => [c.id, c])))
+  const bench = computeBench(pool, [{ teams: slots, difficulty: '普通团' }], new Map(pool.map((c) => [c.id, c])))
   ok('未上场 3 人（多余的 C）', bench.length === 3, bench.map((b) => b.character.name).join(','))
   ok('未上场原因标记为未入选', bench.every((b) => b.reason === 'not-selected'))
 }
@@ -162,7 +162,7 @@ console.log('\n=== 3. 同一个玩家只能上场一个角色 ===')
     assigned.filter((a) => a.character.player === '老陈').map((a) => a.character.name).join(',') === '奶萝',
     assigned.filter((a) => a.character.player === '老陈').map((a) => a.character.name).join(','),
   )
-  const bench = computeBench(pool, [{ teams: slots }], 0, new Map(pool.map((c) => [c.id, c])))
+  const bench = computeBench(pool, [{ teams: slots, difficulty: '普通团' }], new Map(pool.map((c) => [c.id, c])))
   const conflict = bench.filter((b) => b.reason === 'player-conflict')
   ok(
     '同玩家的其余角色进入候补并标注原因',
@@ -335,10 +335,10 @@ console.log('\n=== 8. 波次数量与多波候补 ===')
     return teams
   }
   const waves = [
-    { teams: slotsOf([...used]) },
-    { teams: slotsOf([]) },
+    { teams: slotsOf([...used]), difficulty: '普通团' },
+    { teams: slotsOf([]), difficulty: '普通团' },
   ]
-  const bench = computeBench(pool, waves, 1, byId)
+  const bench = computeBench(pool, waves, byId)
   ok('已上场的角色不会出现在候补区', bench.every((b) => !used.has(b.character.id)), `候补 ${bench.length} 人`)
   ok('未上场的角色都在候补区', bench.length === pool.length - used.size, `${bench.length} / ${pool.length - used.size}`)
 }

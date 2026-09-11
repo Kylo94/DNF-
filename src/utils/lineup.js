@@ -301,30 +301,33 @@ export function collectAssignments(slots, waveIndex = null) {
 }
 
 /**
- * 未上场候选：所有波次都没排上的角色
- * 原因：同玩家在这一波已经上场 / 未入选
+ * 未上场候选：所有波次都没排上的角色（不分难度）
+ * 原因：
+ *   player-conflict —— 该难度每一波都已经有这个玩家的角色了，实在排不进
+ *   not-selected    —— 还有位置，只是这轮没排到他
  */
-export function computeBench(pool, waves, activeIndex, byId) {
+export function computeBench(pool, waves, byId) {
   const usedAnywhere = new Set()
-  const activePlayers = new Set()
-  waves.forEach((wave, waveIndex) => {
+  const playersPerWave = waves.map((wave) => {
+    const players = new Set()
     for (const list of Object.values(wave.teams || {})) {
       for (const slot of list) {
         if (!slot.characterId) continue
         usedAnywhere.add(slot.characterId)
-        if (waveIndex === activeIndex) {
-          const character = byId.get(slot.characterId)
-          if (character) activePlayers.add(character.player)
-        }
+        const character = byId.get(slot.characterId)
+        if (character) players.add(character.player)
       }
     }
+    return players
   })
+
   return pool
     .filter((c) => !usedAnywhere.has(c.id))
-    .map((c) => ({
-      character: c,
-      reason: activePlayers.has(c.player) ? 'player-conflict' : 'not-selected',
-    }))
+    .map((c) => {
+      const indexes = waves.map((w, i) => (w.difficulty === c.difficulty ? i : -1)).filter((i) => i >= 0)
+      const blocked = indexes.length > 0 && indexes.every((i) => playersPerWave[i].has(c.player))
+      return { character: c, reason: blocked ? 'player-conflict' : 'not-selected' }
+    })
     .sort((a, b) => (b.character.panel ?? -1) - (a.character.panel ?? -1))
 }
 

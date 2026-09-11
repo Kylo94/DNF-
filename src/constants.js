@@ -97,7 +97,7 @@ export function waveName(index) {
 
 /** 排序/视图选项：编队候选列表 */
 export const BENCH_REASON_LABEL = {
-  'player-conflict': '同玩家本波已上场',
+  'player-conflict': '该玩家每波都已上场',
   'not-selected': '未入选',
   'used-other-wave': '已在其他波上场',
   'difficulty-mismatch': '难度不符',

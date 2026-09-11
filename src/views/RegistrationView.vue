@@ -6,7 +6,8 @@ import StatsPanel from '../components/StatsPanel.vue'
 import { DIFFICULTIES, SORT_OPTIONS, CHAR_TYPES } from '../constants.js'
 import { useCharacters } from '../composables/useCharacters.js'
 import { useToast } from '../composables/useToast.js'
-import { exportCharactersToExcel, parseExcelFile } from '../utils/excel.js'
+import { useDataTransfer } from '../composables/useDataTransfer.js'
+import ImportModal from '../components/ImportModal.vue'
 
 const {
   characters,
@@ -22,6 +23,7 @@ const {
   clearAll,
 } = useCharacters()
 const { toast } = useToast()
+const dataTransfer = useDataTransfer()
 
 const formRef = ref(null)
 const editing = ref(null)
@@ -31,7 +33,6 @@ const filters = ref({ keyword: '', type: 'all', difficulty: 'all' })
 const sortMode = ref('created')
 
 const fileInput = ref(null)
-const importModal = ref({ open: false, fileName: '', rows: [], skipped: 0, skipDuplicate: false })
 
 /* ------------------------- 筛选 / 排序 ------------------------- */
 
@@ -171,79 +172,18 @@ function pickFile() {
 async function onFileChange(event) {
   const file = event.target.files?.[0]
   event.target.value = ''
-  if (!file) return
-  try {
-    const parsed = await parseExcelFile(file)
-    if (!parsed.characters.length) {
-      toast('没有从文件中识别出角色数据，请确认表头包含「归属玩家」「角色称呼」', 'error')
-      return
-    }
-    if (characters.value.length) {
-      importModal.value = {
-        open: true,
-        fileName: file.name,
-        rows: parsed.characters,
-        skipped: parsed.skipped,
-        skipDuplicate: false,
-      }
-    } else {
-      replaceAll(parsed.characters)
-      toast(`导入完成：${parsed.characters.length} 个角色`, 'success')
-    }
-  } catch (err) {
-    console.error(err)
-    toast(`导入失败：${err.message || err}`, 'error')
-  }
-}
-
-function applyImport(mode) {
-  const { rows } = importModal.value
-  if (mode === 'replace') {
-    replaceAll(rows)
-    editing.value = null
-    toast(`已覆盖导入 ${rows.length} 个角色`, 'success')
-  } else {
-    const { added, duplicated } = appendMany(rows, { skipDuplicate: importModal.value.skipDuplicate })
-    toast(
-      `追加导入 ${added} 个角色${duplicated ? `，按设置跳过重复 ${duplicated} 个` : ''}`,
-      'success',
-    )
-  }
-  importModal.value.open = false
+  if (file) await dataTransfer.pickAndParse(file)
 }
 
 /* ------------------------- 导出 ------------------------- */
 
 function handleExport() {
-  try {
-    const name = exportCharactersToExcel(characters.value, playerStats.value)
-    toast(`已保存并下载：${name}`, 'success', 3600)
-  } catch (err) {
-    toast(err.message || '导出失败', 'error')
-  }
+  dataTransfer.download()
 }
 
 function handleExportFiltered() {
-  try {
-    const rows = filtered.value
-    const byPlayer = new Map()
-    for (const c of rows) {
-      const row = byPlayer.get(c.player) || { player: c.player, total: 0, c: 0, n: 0, normal: 0, hard: 0 }
-      row.total += 1
-      if (c.type === 'C') row.c += 1
-      else row.n += 1
-      if (c.difficulty === '困难团') row.hard += 1
-      else row.normal += 1
-      byPlayer.set(c.player, row)
-    }
-    const name = exportCharactersToExcel(
-      rows,
-      [...byPlayer.values()].sort((a, b) => b.total - a.total),
-    )
-    toast(`已导出当前筛选结果（${rows.length} 条）：${name}`, 'success', 3600)
-  } catch (err) {
-    toast(err.message || '导出失败', 'error')
-  }
+  dataTransfer.download({ characters: filtered.value })
+  toast(`导出的是当前筛选的 ${filtered.value.length} 条登记（排表 sheet 仍为完整数据）`, 'info', 3600)
 }
 </script>
 
@@ -261,7 +201,9 @@ function handleExportFiltered() {
         <input ref="fileInput" data-testid="input-file" type="file" accept=".xlsx,.xls,.csv" hidden @change="onFileChange" />
         <button class="btn btn--ghost" @click="pickFile">导入 Excel</button>
         <button class="btn btn--primary" data-testid="btn-export" @click="handleExport">保存到 Excel（下载）</button>
-        <button class="btn btn--danger-ghost" :disabled="!characters.length" @click="handleClear">清空</button>
+        <button class="btn btn--danger-ghost" data-testid="btn-clear-roster" :disabled="!characters.length" @click="handleClear">
+          清空
+        </button>
       </div>
     </header>
 
@@ -328,31 +270,7 @@ function handleExportFiltered() {
       </div>
     </main>
 
-    <!-- 导入方式选择 -->
-    <div v-if="importModal.open" class="modal-mask" @click.self="importModal.open = false">
-      <div class="modal">
-        <h3>导入 Excel</h3>
-        <p class="modal__file">{{ importModal.fileName }}</p>
-        <p class="modal__text">
-          已解析出 <strong>{{ importModal.rows.length }}</strong> 个角色，
-          当前已有 <strong>{{ characters.length }}</strong> 条登记数据。
-          <template v-if="importModal.skipped">（另有 {{ importModal.skipped }} 行无效数据已跳过）</template>
-        </p>
-        <label class="modal__check">
-          <input v-model="importModal.skipDuplicate" type="checkbox" data-testid="check-skip-dup" />
-          <span>跳过与现有数据重复的记录（同一玩家+同一角色称呼）</span>
-        </label>
-        <p class="modal__text muted">
-          默认全部保留：同一位玩家可能有多个同名角色（例如两个「奶萝」）。
-          「覆盖导入」会先清空现有数据。
-        </p>
-        <div class="modal__actions">
-          <button class="btn btn--primary" @click="applyImport('append')">追加导入</button>
-          <button class="btn btn--danger-ghost" @click="applyImport('replace')">覆盖导入</button>
-          <button class="btn btn--ghost" @click="importModal.open = false">取消</button>
-        </div>
-      </div>
-    </div>
+    <ImportModal />
   </div>
 </template>
 
@@ -451,70 +369,6 @@ function handleExportFiltered() {
 
 .muted {
   color: var(--text-dim);
-}
-
-.modal-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 500;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(5, 8, 14, 0.7);
-  backdrop-filter: blur(3px);
-  padding: 20px;
-}
-
-.modal {
-  width: min(460px, 100%);
-  padding: 22px;
-  border-radius: 16px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
-}
-
-.modal h3 {
-  margin: 0 0 6px;
-  font-size: 17px;
-}
-
-.modal__file {
-  margin: 0 0 12px;
-  font-size: 12.5px;
-  color: var(--accent);
-  word-break: break-all;
-}
-
-.modal__text {
-  margin: 0 0 8px;
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--text-soft);
-}
-
-.modal__check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 12px 0 6px;
-  font-size: 13px;
-  color: var(--text-soft);
-  cursor: pointer;
-}
-
-.modal__check input {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  accent-color: var(--accent);
-}
-
-.modal__actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 18px;
-  flex-wrap: wrap;
 }
 
 @media (max-width: 1000px) {

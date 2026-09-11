@@ -219,7 +219,8 @@ export function useLineup() {
     return map
   })
 
-  const bench = computed(() => computeBench(activePool.value, state.waves, activeIndex.value, byId.value))
+  /** 未上场：全部难度里都没排上的角色 */
+  const bench = computed(() => computeBench(characters.value, state.waves, byId.value))
 
   const warnings = computed(() =>
     validateLineup({
@@ -256,6 +257,16 @@ export function useLineup() {
     c: activePool.value.filter((c) => c.type === 'C').length,
     n: activePool.value.filter((c) => c.type === 'N').length,
   }))
+
+  /** 新波次默认难度下的角色池（自动分档用） */
+  const defaultPoolStats = computed(() => {
+    const pool = poolsByDifficulty.value[state.defaultDifficulty] || []
+    return {
+      total: pool.length,
+      c: pool.filter((c) => c.type === 'C').length,
+      n: pool.filter((c) => c.type === 'N').length,
+    }
+  })
 
   /** 波次概览（页签上显示人数） */
   const waveSummaries = computed(() =>
@@ -401,8 +412,8 @@ export function useLineup() {
   function addWave() {
     if (state.waves.length >= MAX_WAVES) return { ok: false, message: `最多 ${MAX_WAVES} 波` }
     const wave = makeWave(state.defaultDifficulty, state.globalLayout)
-    const at = activeIndex.value + 1
-    state.waves.splice(at, 0, wave)
+    state.waves.push(wave)
+    const at = state.waves.length - 1
     state.activeWave = at
     return { ok: true, message: `已添加${waveName(at)}` }
   }
@@ -435,6 +446,18 @@ export function useLineup() {
       ),
     }))
     state.assignedAt = null
+  }
+
+  /** 导入时整体替换波次与区间配置 */
+  function replaceAll({ waves, config } = {}) {
+    if (Array.isArray(waves) && waves.length) {
+      state.waves = normalizeWaves(waves)
+      if (config) state.config = normalizeConfig(config)
+      state.activeWave = 0
+      state.assignedAt = Date.now()
+      state.configDirty = false
+      syncLayouts()
+    }
   }
 
   function setActiveWave(index) {
@@ -643,6 +666,7 @@ export function useLineup() {
     activePool,
     activeSlots,
     activePoolStats,
+    defaultPoolStats,
     activeAssignedCount,
     assignments,
     bench,
@@ -658,6 +682,7 @@ export function useLineup() {
     removeWave,
     clearWave,
     clearAllWaves,
+    replaceAll,
     setActiveWave,
     setWaveDifficulty,
     setDefaultDifficulty,

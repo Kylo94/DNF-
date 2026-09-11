@@ -1,13 +1,15 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import TeamCard from '../components/lineup/TeamCard.vue'
+import WaveRow from '../components/lineup/WaveRow.vue'
 import TeamSettings from '../components/lineup/TeamSettings.vue'
 import BenchPanel from '../components/lineup/BenchPanel.vue'
-import { DIFFICULTIES, MAX_WAVES, RAID_SIZE, TEAM_LAYOUTS } from '../constants.js'
+import ImportModal from '../components/ImportModal.vue'
+import { DIFFICULTIES, MAX_WAVES, RAID_SIZE, TEAM_LAYOUTS, TEAMS, waveName } from '../constants.js'
 import { useLineup } from '../composables/useLineup.js'
+import { useDataTransfer } from '../composables/useDataTransfer.js'
 import { useToast } from '../composables/useToast.js'
 import { DISPLAY_FORMATS, characterText } from '../utils/display.js'
-import { exportLineupToExcel } from '../utils/excel.js'
+import { teamSummary } from '../utils/lineup.js'
 
 const emit = defineEmits(['go-registration'])
 
@@ -15,24 +17,15 @@ const {
   state,
   byId,
   teamConfigs,
-  activeIndex,
-  activeWave,
-  activePoolStats,
-  activeSlots,
-  activeAssignedCount,
+  defaultPoolStats,
   bench,
-  activeWarnings,
-  otherWarnings,
-  teamStats,
-  waveSummaries,
+  warnings,
   overallStats,
   assignAll,
   assignWave,
   addWave,
   removeWave,
-  clearWave,
   clearAllWaves,
-  setActiveWave,
   setWaveDifficulty,
   setDefaultDifficulty,
   setDisplayFormat,
@@ -45,35 +38,79 @@ const {
   swapHealSlots,
 } = useLineup()
 const { toast } = useToast()
+const dataTransfer = useDataTransfer()
 
+const fileInput = ref(null)
 const dragSource = ref(null)
 const selected = ref(null)
+const showWarnings = ref(false)
 
-const warnings = computed(() => activeWarnings.value)
+/** 每波每队的统计（合计伤害 / 目标 / 空位） */
+const waveStats = computed(() =>
+  state.waves.map((wave) => {
+    const map = {}
+    for (const team of TEAMS) {
+      const config = teamConfigs.value.find((t) => t.id === team.id)
+      map[team.id] = teamSummary(wave.teams[team.id] || [], byId.value, config?.cTotalRange)
+    }
+    return map
+  }),
+)
+
+const waveAssigned = computed(() =>
+  state.waves.map((wave) =>
+    TEAMS.reduce((sum, t) => sum + (wave.teams[t.id] || []).filter((s) => s.characterId).length, 0),
+  ),
+)
+
+const waveWarnCount = computed(() => {
+  const counts = state.waves.map(() => 0)
+  for (const w of warnings.value) {
+    if (typeof w.waveIndex === 'number' && counts[w.waveIndex] !== undefined) counts[w.waveIndex] += 1
+  }
+  return counts
+})
+
 const sortedWarnings = computed(() => {
   const rank = { error: 0, warn: 1, info: 2 }
   return [...warnings.value].sort((a, b) => rank[a.level] - rank[b.level])
 })
 
+const errorCount = computed(() => warnings.value.filter((w) => w.level === 'error').length)
 const layoutMeta = computed(() => TEAM_LAYOUTS.find((l) => l.value === state.globalLayout))
-const activeSummary = computed(() => waveSummaries.value[activeIndex.value])
-
 const overallLabel = computed(
-  () => `已将 ${overallStats.value.used} / ${overallStats.value.totalCharacters} 个角色排入 ${overallStats.value.waves} 波`,
+  () => `已排 ${overallStats.value.used} / ${overallStats.value.totalCharacters} 人 · 共 ${overallStats.value.waves} 波`,
 )
 
 const assignedAtLabel = computed(() => {
-  if (!state.assignedAt) return '尚未分配'
+  if (!state.assignedAt) return '尚未排表'
   const d = new Date(state.assignedAt)
   const p = (n) => String(n).padStart(2, '0')
-  return `上次分配 ${p(d.getHours())}:${p(d.getMinutes())}`
+  return `上次排表 ${p(d.getHours())}:${p(d.getMinutes())}`
+})
+
+const formatSample = computed(() => {
+  for (const wave of state.waves) {
+    for (const list of Object.values(wave.teams)) {
+      const slot = list.find((s) => s.characterId)
+      if (slot) return characterText(byId.value.get(slot.characterId), state.displayFormat)
+    }
+  }
+  return DISPLAY_FORMATS.find((f) => f.value === state.displayFormat)?.sample
 })
 
 onMounted(() => {
-  if (!state.assignedAt && overallStats.value.used === 0 && state.waves.length <= 1 && activePoolStats.value.total) {
+  if (
+    !state.assignedAt &&
+    overallStats.value.used === 0 &&
+    state.waves.length <= 1 &&
+    overallStats.value.totalCharacters
+  ) {
     assignAll()
   }
 })
+
+/* ------------------------- 顶部操作 ------------------------- */
 
 function runAssignAll() {
   if (!overallStats.value.totalCharacters) {
@@ -85,31 +122,9 @@ function runAssignAll() {
   toast(`已按难度排完 ${result.waves} 波，共上场 ${result.assigned} 个角色`, 'success', 3600)
 }
 
-function runAssignWave() {
-  if (!activePoolStats.value.total) {
-    toast(`${activeWave.value.difficulty}还没有登记任何角色`, 'error')
-    return
-  }
-  selected.value = null
-  const result = assignWave(activeIndex.value)
-  toast(`已重新分配${activeSummary.value.name}（上场 ${result.assigned} 人）`, 'success')
-}
-
 function handleAddWave() {
   const result = addWave()
   toast(result.message, result.ok ? 'success' : 'warn')
-}
-
-function handleRemoveWave() {
-  if (state.waves.length === 1) {
-    if (!window.confirm('这是最后一波，确定清空这一波的角色吗？')) return
-    clearWave(activeIndex.value)
-    toast('已清空当前波次', 'info')
-    return
-  }
-  if (!window.confirm(`确定删除${activeSummary.value.name}吗？`)) return
-  const result = removeWave(activeIndex.value)
-  toast(result.message, 'info')
 }
 
 function handleClearAll() {
@@ -120,17 +135,31 @@ function handleClearAll() {
   toast('已清空全部波次', 'warn')
 }
 
-function handleDifficulty(value) {
-  if (activeWave.value.difficulty === value) return
-  setWaveDifficulty(activeIndex.value, value)
-  selected.value = null
-  toast(`${activeSummary.value.name}已切换为${value}，建议点「重新分配本波」`, 'info')
-}
-
 function handleGlobalLayout(value) {
   if (state.globalLayout === value) return
   setGlobalLayout(value)
   toast(`全局配置切换为 ${TEAM_LAYOUTS.find((l) => l.value === value)?.short}`, 'info')
+}
+
+/* ------------------------- 单波操作 ------------------------- */
+
+function handleWaveDifficulty(index, difficulty) {
+  setWaveDifficulty(index, difficulty)
+  selected.value = null
+  toast(`${waveName(index)}已切换为${difficulty}，点该行「重排」重新分配`, 'info')
+}
+
+function handleReassign(index) {
+  selected.value = null
+  const result = assignWave(index)
+  toast(`${waveName(index)}已重新分配（上场 ${result.assigned} 人）`, 'success')
+}
+
+function handleRemoveWave(index) {
+  if (!window.confirm(`确定删除${waveName(index)}吗？该波角色会回到未登场列表。`)) return
+  const result = removeWave(index)
+  selected.value = null
+  toast(result.message, 'info')
 }
 
 /* ------------------------- 拖拽 / 点击 ------------------------- */
@@ -150,49 +179,45 @@ function onDragEnd() {
   dragSource.value = null
 }
 
-function onSlotDrop(teamId, index) {
+function onSlotDrop(waveIndex, teamId, index) {
   if (!dragSource.value) return
-  doTransfer(dragSource.value, { kind: 'slot', waveIndex: activeIndex.value, teamId, index })
+  doTransfer(dragSource.value, { kind: 'slot', waveIndex, teamId, index })
   dragSource.value = null
 }
 
 function onDropBench() {
   if (!dragSource.value) return
-  if (dragSource.value.kind === 'slot') {
-    doTransfer(dragSource.value, { kind: 'bench' })
-  }
+  if (dragSource.value.kind === 'slot') doTransfer(dragSource.value, { kind: 'bench' })
   dragSource.value = null
 }
 
-function onSlotClick(teamId, index) {
-  const slot = activeSlots.value[teamId][index]
+function onSlotClick(waveIndex, teamId, index) {
+  const slot = state.waves[waveIndex]?.teams[teamId]?.[index]
+  if (!slot) return
   const current = selected.value
   if (current) {
     const same =
       current.kind === 'slot' &&
-      (current.waveIndex ?? activeIndex.value) === activeIndex.value &&
+      current.waveIndex === waveIndex &&
       current.teamId === teamId &&
       current.index === index
     if (same) {
       selected.value = null
       return
     }
-    doTransfer(
-      current.kind === 'slot' ? { ...current, waveIndex: current.waveIndex ?? activeIndex.value } : current,
-      { kind: 'slot', waveIndex: activeIndex.value, teamId, index },
-    )
+    doTransfer(current, { kind: 'slot', waveIndex, teamId, index })
     selected.value = null
     return
   }
   if (!slot.characterId) return
-  selected.value = { kind: 'slot', waveIndex: activeIndex.value, teamId, index }
+  selected.value = { kind: 'slot', waveIndex, teamId, index }
 }
 
 function onBenchSelect(characterId) {
   const current = selected.value
   if (current) {
     if (current.kind === 'slot') {
-      doTransfer({ ...current, waveIndex: current.waveIndex ?? activeIndex.value }, { kind: 'bench' })
+      doTransfer(current, { kind: 'bench' })
       selected.value = null
       return
     }
@@ -204,41 +229,40 @@ function onBenchSelect(characterId) {
   selected.value = { kind: 'bench', characterId }
 }
 
-function onRemoveSlot(teamId, index) {
+function removeSlotAt(waveIndex, teamId, index) {
   selected.value = null
-  const result = transfer({ kind: 'slot', waveIndex: activeIndex.value, teamId, index }, { kind: 'bench' })
+  const result = transfer({ kind: 'slot', waveIndex, teamId, index }, { kind: 'bench' })
   if (result.message) toast(result.message, result.ok ? 'success' : 'error')
 }
 
 function handleSwapHeals(teamId) {
-  const result = swapHealSlots(activeIndex.value, teamId)
+  const waveIndex = state.waves.findIndex((wave) => {
+    const heals = (wave.teams[teamId] || []).filter((s) => s.role === 'N')
+    if (heals.length < 2 || !heals.every((s) => s.characterId)) return false
+    const first = byId.value.get(heals[0].characterId)
+    const second = byId.value.get(heals[1].characterId)
+    return first && second && Number(second.panel) > Number(first.panel)
+  })
+  if (waveIndex === -1) return
+  const result = swapHealSlots(waveIndex, teamId)
   if (result.message) toast(result.message, result.ok ? 'success' : 'warn')
 }
 
-function handleExport() {
-  if (!overallStats.value.used) {
-    toast('还没有分配角色，无法导出编队', 'error')
-    return
-  }
-  try {
-    const name = exportLineupToExcel({
-      waves: state.waves,
-      teamConfigs: teamConfigs.value,
-      byId: byId.value,
-      bench: bench.value,
-      difficulty: state.defaultDifficulty,
-    })
-    toast(`已导出编队：${name}`, 'success', 3600)
-  } catch (err) {
-    toast(err.message || '导出失败', 'error')
-  }
+/* ------------------------- 导入 / 导出 ------------------------- */
+
+function pickFile() {
+  fileInput.value?.click()
 }
 
-const formatSample = computed(() => {
-  const sample = activeSlots.value.red?.find((s) => s.characterId)
-  const character = sample ? byId.value.get(sample.characterId) : null
-  return character ? characterText(character, state.displayFormat) : DISPLAY_FORMATS.find((f) => f.value === state.displayFormat)?.sample
-})
+async function onFileChange(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (file) await dataTransfer.pickAndParse(file)
+}
+
+function handleExport() {
+  dataTransfer.download()
+}
 </script>
 
 <template>
@@ -268,16 +292,31 @@ const formatSample = computed(() => {
           :value="state.globalLayout"
           @change="handleGlobalLayout($event.target.value)"
         >
-          <option v-for="l in TEAM_LAYOUTS" :key="l.value" :value="l.value">
-            {{ l.label }}（{{ l.short }}）
-          </option>
+          <option v-for="l in TEAM_LAYOUTS" :key="l.value" :value="l.value">{{ l.label }}（{{ l.short }}）</option>
         </select>
       </div>
 
       <div class="bar__group bar__group--actions">
         <button class="btn btn--primary" data-testid="btn-assign" @click="runAssignAll">一键排完全部波次</button>
-        <button class="btn" data-testid="btn-export-lineup" @click="handleExport">导出编队 Excel</button>
-        <button class="btn btn--danger-ghost" data-testid="btn-clear-lineup" :disabled="!overallStats.used" @click="handleClearAll">
+        <button class="btn" data-testid="btn-add-wave" :disabled="state.waves.length >= MAX_WAVES" @click="handleAddWave">
+          + 添加波次
+        </button>
+        <input
+          ref="fileInput"
+          data-testid="input-file-lineup"
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          hidden
+          @change="onFileChange"
+        />
+        <button class="btn" data-testid="btn-import-lineup" @click="pickFile">导入 Excel</button>
+        <button class="btn" data-testid="btn-export-lineup" @click="handleExport">导出 Excel</button>
+        <button
+          class="btn btn--danger-ghost"
+          data-testid="btn-clear-lineup"
+          :disabled="!overallStats.used"
+          @click="handleClearAll"
+        >
           清空全部
         </button>
       </div>
@@ -303,9 +342,7 @@ const formatSample = computed(() => {
             {{ f.label }}
           </button>
         </div>
-        <span class="format-sample">
-          示例：<span class="sample-name">龙神</span> → {{ formatSample }}
-        </span>
+        <span class="format-sample">示例：{{ formatSample }}</span>
         <span class="format-legend">
           <span class="legend legend--n">辅助奶 绿色</span>
           <span class="legend legend--c">输出C 蓝色</span>
@@ -313,128 +350,91 @@ const formatSample = computed(() => {
       </div>
     </section>
 
-    <!-- 波次页签 -->
-    <section class="card waves">
-      <div class="waves__head">
-        <h2>波次</h2>
-        <span class="muted">按难度依次把角色排进第一波、第二波……排不下的留在候补区，空位可手动补人</span>
-        <button class="btn btn--tiny" data-testid="btn-add-wave" :disabled="state.waves.length >= MAX_WAVES" @click="handleAddWave">
-          + 添加波次
-        </button>
-      </div>
-      <div class="waves__tabs" data-testid="wave-tabs">
-        <button
-          v-for="w in waveSummaries"
-          :key="w.index"
-          class="wave-tab"
-          :class="{ 'wave-tab--active': w.index === activeIndex }"
-          :data-testid="`wave-tab-${w.index}`"
-          @click="setActiveWave(w.index)"
-        >
-          <span class="wave-tab__name">{{ w.name }}</span>
-          <span class="wave-tab__count" :class="{ 'is-bad': w.assigned < w.total }">{{ w.assigned }}/{{ w.total }}</span>
-          <span class="wave-tab__diff">{{ w.difficulty === '困难团' ? '困难' : '普通' }}</span>
-          <span v-if="w.missingHeal" class="wave-tab__warn" title="有队伍缺奶">缺奶</span>
-        </button>
-      </div>
-    </section>
-
-    <section class="card wave-bar">
-      <div class="wave-bar__group">
-        <span class="bar__label">{{ activeSummary?.name }}难度</span>
-        <div class="segment">
-          <button
-            v-for="d in DIFFICULTIES"
-            :key="d"
-            class="segment__btn"
-            :class="{ 'segment__btn--active': activeWave.difficulty === d }"
-            :data-testid="`btn-wave-difficulty-${d}`"
-            @click="handleDifficulty(d)"
-          >
-            {{ d }}
-          </button>
-        </div>
-      </div>
-      <div class="wave-bar__group">
-        <span class="status" data-testid="assigned-count">本波上场 {{ activeAssignedCount }}/{{ RAID_SIZE }}</span>
-        <span class="muted">角色池：输出C {{ activePoolStats.c }} · 辅助奶 {{ activePoolStats.n }}</span>
-      </div>
-      <div class="wave-bar__actions">
-        <button class="btn btn--tiny" data-testid="btn-assign-wave" @click="runAssignWave">重新分配本波</button>
-        <button class="btn btn--tiny btn--danger-ghost" data-testid="btn-remove-wave" @click="handleRemoveWave">
-          删除本波
-        </button>
-      </div>
-    </section>
-
     <TeamSettings
       :team-configs="teamConfigs"
       :global-layout="state.globalLayout"
-      :pool-stats="activePoolStats"
-      :difficulty="activeWave.difficulty"
+      :pool-stats="defaultPoolStats"
+      :difficulty="state.defaultDifficulty"
       @team-layout="setTeamLayout"
       @range="setRange"
       @auto-band="applySuggestedRanges(); toast('已按当前难度角色池自动分档（含合计伤害目标），可手动微调', 'success')"
       @reset-ranges="resetRanges(); toast('已清空区间配置', 'info')"
     />
 
-    <section v-if="sortedWarnings.length || otherWarnings.length" class="card warns" data-testid="lineup-warnings">
-      <div class="warns__head">
-        <h3>{{ activeSummary?.name }}编队检查</h3>
-        <span class="muted">{{ sortedWarnings.length }} 条提示</span>
-        <span v-if="otherWarnings.length" class="muted other">
-          其他波次还有 {{ otherWarnings.length }} 条提示
+    <section class="card waves">
+      <header class="waves__head">
+        <h2>全部波次</h2>
+        <span class="muted">
+          每行一波：红 / 黄 / 绿三组人员一屏看全。拖拽或「先点一个位置、再点目标位置」都能换人，跨波次也可以。
         </span>
+        <button
+          class="btn btn--tiny"
+          :class="{ 'btn--warn': errorCount }"
+          data-testid="btn-toggle-warnings"
+          @click="showWarnings = !showWarnings"
+        >
+          编队检查 {{ warnings.length ? `(${warnings.length})` : '通过' }} {{ showWarnings ? '▲' : '▼' }}
+        </button>
+      </header>
+
+      <div v-if="showWarnings" class="warns" data-testid="lineup-warnings">
+        <ul v-if="sortedWarnings.length">
+          <li v-for="(w, i) in sortedWarnings.slice(0, 20)" :key="i" :class="`lv-${w.level}`">
+            <span class="lv-tag">{{ w.level === 'error' ? '必须处理' : w.level === 'warn' ? '注意' : '提示' }}</span>
+            {{ w.message }}
+          </li>
+        </ul>
+        <p v-else class="muted">没有发现问题：每队都有奶、没有空位、合计伤害在目标范围内。</p>
+        <p v-if="sortedWarnings.length > 20" class="muted">还有 {{ sortedWarnings.length - 20 }} 条…</p>
       </div>
-      <ul>
-        <li v-for="(w, i) in sortedWarnings.slice(0, 8)" :key="i" :class="`lv-${w.level}`">
-          <span class="lv-tag">{{ w.level === 'error' ? '必须处理' : w.level === 'warn' ? '注意' : '提示' }}</span>
-          {{ w.message }}
-        </li>
-      </ul>
-      <p v-if="sortedWarnings.length > 8" class="muted">还有 {{ sortedWarnings.length - 8 }} 条…</p>
+
+      <div v-if="!overallStats.totalCharacters" class="empty-state">
+        <p>还没有登记任何角色。</p>
+        <button class="btn btn--primary" @click="emit('go-registration')">去登记角色</button>
+      </div>
+
+      <div v-else class="waves__list" data-testid="waves-list">
+        <WaveRow
+          v-for="(wave, index) in state.waves"
+          :key="wave.id"
+          :wave="wave"
+          :index="index"
+          :name="waveName(index)"
+          :teams="teamConfigs"
+          :stats="waveStats[index]"
+          :by-id="byId"
+          :display-format="state.displayFormat"
+          :selected="selected"
+          :drag-active="Boolean(dragSource)"
+          :difficulty-options="DIFFICULTIES"
+          :assigned="waveAssigned[index]"
+          :total="RAID_SIZE"
+          :warn-count="waveWarnCount[index]"
+          @slot-click="onSlotClick"
+          @slot-drop="onSlotDrop"
+          @drag-start="onDragStart"
+          @drag-end="onDragEnd"
+          @remove-slot="removeSlotAt"
+          @swap-heals="handleSwapHeals"
+          @change-difficulty="handleWaveDifficulty"
+          @reassign="handleReassign"
+          @remove-wave="handleRemoveWave"
+        />
+      </div>
     </section>
 
-    <div v-if="!activePoolStats.total" class="card empty-state">
-      <p>{{ activeWave.difficulty }}还没有登记任何角色。</p>
-      <button class="btn btn--primary" @click="emit('go-registration')">去登记角色</button>
-    </div>
-
-    <div v-else class="teams-grid">
-      <TeamCard
-        v-for="team in teamConfigs"
-        :key="team.id"
-        :team="team"
-        :slots="activeSlots[team.id]"
-        :stats="teamStats[team.id]"
-        :by-id="byId"
-        :difficulty="activeWave.difficulty"
-        :wave-index="activeIndex"
-        :display-format="state.displayFormat"
-        :selected="selected"
-        :drag-active="Boolean(dragSource)"
-        @slot-click="onSlotClick"
-        @slot-drop="onSlotDrop"
-        @drag-start="onDragStart"
-        @drag-end="onDragEnd"
-        @swap-heals="handleSwapHeals"
-        @remove-slot="onRemoveSlot"
-      />
-    </div>
-
     <BenchPanel
-      v-if="activePoolStats.total"
       :bench="bench"
-      :pool-stats="activePoolStats"
-      :assigned-count="activeAssignedCount"
-      :raid-size="RAID_SIZE"
-      :difficulty="activeWave.difficulty"
-      :wave-name="activeSummary?.name"
+      :total-characters="overallStats.totalCharacters"
+      :assigned-count="overallStats.used"
+      :capacity="overallStats.waves * RAID_SIZE"
       @drag-start="onDragStart"
       @drag-end="onDragEnd"
       @drop-bench="onDropBench"
       @select="onBenchSelect"
     />
+
+    <ImportModal />
   </div>
 </template>
 
@@ -442,7 +442,7 @@ const formatSample = computed(() => {
 .lineup {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 
 .bar {
@@ -510,7 +510,7 @@ const formatSample = computed(() => {
   flex-wrap: wrap;
   width: 100%;
   border-top: 1px dashed var(--border);
-  padding-top: 10px;
+  padding-top: 9px;
 }
 
 .bar__format {
@@ -554,10 +554,6 @@ const formatSample = computed(() => {
 .format-sample {
   font-size: 12px;
   color: var(--text-dim);
-}
-
-.sample-name {
-  color: #60a5fa;
 }
 
 .format-legend {
@@ -604,7 +600,6 @@ const formatSample = computed(() => {
   color: var(--text-dim);
 }
 
-/* ---- 波次 ---- */
 .waves__head {
   display: flex;
   align-items: center;
@@ -622,101 +617,23 @@ const formatSample = computed(() => {
   margin-left: auto;
 }
 
-.waves__tabs {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 4px;
+.btn--warn {
+  border-color: rgba(251, 191, 36, 0.5);
+  color: #fde68a;
 }
 
-.wave-tab {
+.waves__list {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.warns {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
   border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--bg-input);
-  color: var(--text-dim);
-  font-size: 13px;
-  font-family: inherit;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.15s;
-}
-
-.wave-tab:hover {
-  border-color: rgba(240, 198, 116, 0.5);
-  color: var(--accent);
-}
-
-.wave-tab--active {
-  border-color: rgba(240, 198, 116, 0.65);
-  background: rgba(240, 198, 116, 0.12);
-  color: var(--accent);
-}
-
-.wave-tab__count {
-  font-size: 11.5px;
-  color: #86efac;
-  font-variant-numeric: tabular-nums;
-}
-
-.wave-tab__count.is-bad {
-  color: #fca5a5;
-}
-
-.wave-tab__diff {
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 11px;
-  border: 1px solid var(--border);
-}
-
-.wave-tab__warn {
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 11px;
-  color: #fca5a5;
-  border: 1px solid rgba(248, 113, 113, 0.45);
-}
-
-/* ---- 当前波工具条 ---- */
-.wave-bar {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  flex-wrap: wrap;
-}
-
-.wave-bar__group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.wave-bar__actions {
-  margin-left: auto;
-  display: flex;
-  gap: 8px;
-}
-
-/* ---- 检查 ---- */
-.warns__head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
-}
-
-.warns__head h3 {
-  margin: 0;
-  font-size: 15px;
-}
-
-.warns__head .other {
-  margin-left: auto;
+  background: rgba(255, 255, 255, 0.015);
 }
 
 .warns ul {
@@ -725,14 +642,14 @@ const formatSample = computed(() => {
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
 }
 
 .warns li {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--text-soft);
 }
 
@@ -773,22 +690,5 @@ const formatSample = computed(() => {
 .empty-state p {
   margin: 0;
   color: var(--text-dim);
-}
-
-.teams-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  align-items: start;
-}
-
-@media (max-width: 1100px) {
-  .teams-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .bar__group--actions {
-    margin-left: 0;
-  }
 }
 </style>
