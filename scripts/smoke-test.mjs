@@ -237,6 +237,58 @@ const after = (await store()).length
 ok('删除单条登记', after === before - 1 && dialogLog.some((d) => d.includes('确定删除')), `${before} → ${after}`)
 
 
+/* ================= 登记页交互：编辑不滚动 + 按玩家折叠 ================= */
+{
+  const selText = (selector) => page.$eval(selector, (el) => el.innerText)
+  // 滚到列表中部，点编辑按钮，页面不应该跳回顶部
+  await page.evaluate(() => window.scrollTo(0, 900))
+  await sleep(300)
+  const beforeScroll = await page.evaluate(() => window.scrollY)
+  const targetRow = await page.evaluateHandle(() => {
+    const rows = [...document.querySelectorAll('tbody tr')]
+    return rows[Math.min(30, rows.length - 1)]
+  })
+  const rowName = await targetRow.evaluate((el) => el.querySelector('td').innerText.trim())
+  await targetRow.evaluate((el) => el.querySelector('.btn').click())
+  await sleep(700)
+  const afterScroll = await page.evaluate(() => window.scrollY)
+  ok('点「编辑」不会把列表滚回顶部', Math.abs(afterScroll - beforeScroll) < 40, `${beforeScroll} → ${afterScroll}`)
+  ok('点「编辑」后表单进入编辑模式', (await selText('.form-card')).includes('编辑角色登记'), rowName)
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('.form-card button')].find((b) => b.textContent.includes('取消编辑'))
+    if (btn) btn.click()
+  })
+  await sleep(300)
+
+  // 折叠 / 展开某个玩家
+  const firstGroup = await page.evaluate(() => {
+    const head = document.querySelector('[data-testid^="group-head-"]')
+    return head ? head.dataset.testid.replace('group-head-', '') : ''
+  })
+  ok('角色列表按玩家分组并带折叠入口', Boolean(firstGroup), firstGroup)
+  const rowsBefore = await page.$$eval('tbody tr', (els) => els.length)
+  await page.click(`[data-testid="group-head-${firstGroup}"]`)
+  await sleep(400)
+  ok('点击玩家标题可以折叠该玩家的角色', !(await page.$(`[data-testid="group-table-${firstGroup}"]`)))
+  const rowsCollapsed = await page.$$eval('tbody tr', (els) => els.length)
+  ok('折叠后该玩家的角色行不再显示', rowsCollapsed < rowsBefore, `${rowsBefore} → ${rowsCollapsed}`)
+  ok(
+    '折叠后仍能看到该玩家的汇总信息',
+    (await selText(`[data-testid="group-head-${firstGroup}"]`)).includes('个角色'),
+  )
+  await page.click(`[data-testid="group-expand-${firstGroup}"]`)
+  await sleep(400)
+  ok('可以再次展开', Boolean(await page.$(`[data-testid="group-table-${firstGroup}"]`)))
+
+  // 全部折叠 / 全部展开
+  await page.click('[data-testid="btn-toggle-all-groups"]')
+  await sleep(400)
+  ok('可以一键全部折叠', (await page.$$eval('tbody tr', (els) => els.length)) === 0)
+  await page.click('[data-testid="btn-toggle-all-groups"]')
+  await sleep(400)
+  ok('可以一键全部展开', (await page.$$eval('tbody tr', (els) => els.length)) === rowsBefore)
+}
+
 /* ================= 编队排表（多波次一行一波 + 显示格式 + 合计伤害） ================= */
 const LINEUP_KEY = 'dnf-raid-lineup-v2'
 const readLineup = () => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || 'null'), LINEUP_KEY)

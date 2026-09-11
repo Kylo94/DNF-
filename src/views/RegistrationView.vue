@@ -120,7 +120,11 @@ function handleSubmit(payload, { isEdit, reset }) {
 
 function handleEdit(row) {
   editing.value = row
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+  // 宽屏时表单是粘性定位、一直在视野里，保持列表原位不滚动；窄屏表单在上方才滚过去
+  if (window.innerWidth <= 1000) {
+    const el = formRef.value?.$el
+    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 }
 
 function handlePrefill(row) {

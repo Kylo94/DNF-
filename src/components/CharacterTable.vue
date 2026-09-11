@@ -1,8 +1,9 @@
 <script setup>
+import { computed, ref } from 'vue'
 import { typeLabel } from '../constants.js'
 import { formatPanel } from '../utils/format.js'
 
-defineProps({
+const props = defineProps({
   /** [{ player, characters: [] }] */
   groups: { type: Array, default: () => [] },
   /** 当前显示的（筛选后）角色总数 */
@@ -10,6 +11,28 @@ defineProps({
 })
 
 const emit = defineEmits(['edit', 'prefill', 'remove', 'remove-player'])
+
+/** 折叠起来的玩家（按玩家名记录） */
+const collapsed = ref(new Set())
+
+function isCollapsed(player) {
+  return collapsed.value.has(player)
+}
+
+function toggleGroup(player) {
+  const next = new Set(collapsed.value)
+  if (next.has(player)) next.delete(player)
+  else next.add(player)
+  collapsed.value = next
+}
+
+const allCollapsed = computed(
+  () => props.groups.length > 0 && props.groups.every((g) => collapsed.value.has(g.player)),
+)
+
+function toggleAll() {
+  collapsed.value = allCollapsed.value ? new Set() : new Set(props.groups.map((g) => g.player))
+}
 
 function groupSummary(chars) {
   const c = chars.filter((x) => x.type === 'C').length
@@ -32,9 +55,23 @@ function playerCounts(chars) {
   </div>
 
   <div v-else class="groups">
+    <div class="groups__tools">
+      <span class="muted">{{ groups.length }} 位玩家</span>
+      <button class="btn btn--tiny btn--ghost" data-testid="btn-toggle-all-groups" @click="toggleAll">
+        {{ allCollapsed ? '全部展开' : '全部折叠' }}
+      </button>
+    </div>
+
     <section v-for="group in groups" :key="group.player" class="group">
-      <header class="group__head">
+      <header
+        class="group__head"
+        :class="{ 'group__head--collapsed': isCollapsed(group.player) }"
+        :data-testid="`group-head-${group.player}`"
+        :title="isCollapsed(group.player) ? '点击展开该玩家的角色' : '点击折叠该玩家的角色'"
+        @click="toggleGroup(group.player)"
+      >
         <div class="group__title">
+          <span class="chev" :class="{ 'chev--collapsed': isCollapsed(group.player) }">▾</span>
           <span class="player">{{ group.player }}</span>
           <span class="dot">·</span>
           <span class="muted">{{ group.characters.length }} 个角色</span>
@@ -42,12 +79,20 @@ function playerCounts(chars) {
           <span class="mini mini--normal">普通 {{ playerCounts(group.characters).normal }}</span>
           <span class="mini mini--hard">困难 {{ playerCounts(group.characters).hard }}</span>
         </div>
-        <button class="btn btn--tiny btn--danger-ghost" @click="emit('remove-player', group.player)">
+        <button
+          v-if="isCollapsed(group.player)"
+          class="btn btn--tiny btn--ghost"
+          :data-testid="`group-expand-${group.player}`"
+          @click.stop="toggleGroup(group.player)"
+        >
+          展开 {{ group.characters.length }} 个角色
+        </button>
+        <button class="btn btn--tiny btn--danger-ghost" @click.stop="emit('remove-player', group.player)">
           删除该玩家全部
         </button>
       </header>
 
-      <div class="table-wrap">
+      <div v-if="!isCollapsed(group.player)" class="table-wrap" :data-testid="`group-table-${group.player}`">
         <table>
           <thead>
             <tr>
@@ -119,7 +164,29 @@ function playerCounts(chars) {
   background: var(--bg-card);
 }
 
+.groups__tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+}
+
+.chev {
+  display: inline-block;
+  color: var(--text-dim);
+  font-size: 12px;
+  transition: transform 0.15s ease;
+}
+
+.chev--collapsed {
+  transform: rotate(-90deg);
+}
+
 .group__head {
+  cursor: pointer;
+  user-select: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -127,6 +194,15 @@ function playerCounts(chars) {
   padding: 10px 14px;
   background: linear-gradient(90deg, rgba(240, 198, 116, 0.09), rgba(240, 198, 116, 0));
   border-bottom: 1px solid var(--border);
+  transition: background 0.15s;
+}
+
+.group__head:hover {
+  background: linear-gradient(90deg, rgba(240, 198, 116, 0.16), rgba(240, 198, 116, 0.02));
+}
+
+.group__head--collapsed {
+  border-bottom-color: transparent;
 }
 
 .group__title {
