@@ -41,6 +41,52 @@ export const SORT_OPTIONS = [
 
 export const STORAGE_KEY = 'dnf-raid-roster-v1'
 
+/* ------------------------------------------------------------------ *
+ * 编队（排表）
+ * ------------------------------------------------------------------ */
+
+/** 一波团本固定 12 人，分三个队伍 */
+export const RAID_SIZE = 12
+
+/** 三个队伍：红 / 黄 / 绿 */
+export const TEAMS = [
+  { id: 'red', name: '红队', color: '#f87171', soft: 'rgba(248, 113, 113, 0.14)' },
+  { id: 'yellow', name: '黄队', color: '#f0c674', soft: 'rgba(240, 198, 116, 0.14)' },
+  { id: 'green', name: '绿队', color: '#4ade80', soft: 'rgba(74, 222, 128, 0.14)' },
+]
+
+/** 队伍配置：单奶（1奶3C）/ 双奶（2奶2C，一常驻 buff 奶 + 一太阳奶） */
+export const TEAM_LAYOUTS = [
+  {
+    value: '1n3c',
+    label: '单奶配置',
+    short: '1奶3C',
+    healSlots: 1,
+    cSlots: 3,
+    desc: '1 个辅助奶 + 3 个输出C',
+  },
+  {
+    value: '2n2c',
+    label: '双奶配置',
+    short: '2奶2C',
+    healSlots: 2,
+    cSlots: 2,
+    desc: '2 个辅助奶（常驻 buff 奶 + 太阳奶）+ 2 个输出C',
+  },
+]
+
+/** 双奶时两个奶位的语义（顺序与槽位一致，面板高的自动放常驻位） */
+export const HEAL_SLOT_LABELS = ['常驻奶', '太阳奶']
+
+export const STORAGE_KEY_LINEUP = 'dnf-raid-lineup-v1'
+
+/** 排序/视图选项：编队候选列表 */
+export const BENCH_REASON_LABEL = {
+  'player-conflict': '同玩家已上场',
+  'not-selected': '未入选',
+  'difficulty-mismatch': '难度不符',
+}
+
 export function typeMeta(value) {
   return CHAR_TYPES.find((t) => t.value === value) || CHAR_TYPES[0]
 }

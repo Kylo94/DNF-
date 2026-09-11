@@ -17,11 +17,11 @@ const { toasts } = useToast()
 <style scoped>
 .toast-host {
   position: fixed;
-  top: 20px;
   right: 20px;
+  bottom: 20px;
   z-index: 999;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   gap: 10px;
   pointer-events: none;
 }
@@ -62,6 +62,6 @@ const { toasts } = useToast()
 .toast-enter-from,
 .toast-leave-to {
   opacity: 0;
-  transform: translateX(24px);
+  transform: translateY(12px);
 }
 </style>

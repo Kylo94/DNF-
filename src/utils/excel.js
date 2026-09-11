@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx'
-import { EXPORT_HEADERS, DIFFICULTIES } from '../constants.js'
+import { EXPORT_HEADERS, DIFFICULTIES, HEAL_SLOT_LABELS, BENCH_REASON_LABEL } from '../constants.js'
 import { parsePanel, stamp } from './format.js'
 
 /* ------------------------------------------------------------------ *
@@ -48,6 +48,63 @@ export function exportCharactersToExcel(characters, playerStats = []) {
     XLSX.utils.book_append_sheet(wb, buildStatsSheet(playerStats), '玩家统计')
   }
   const filename = `DNF打团角色登记_${stamp()}.xlsx`
+  XLSX.writeFile(wb, filename, { compression: true })
+  return filename
+}
+
+/* ------------------------------------------------------------------ *
+ * 编队（排表）导出
+ * ------------------------------------------------------------------ */
+
+function slotPositionLabel(slot, index, layout) {
+  if (slot.role === 'C') return '输出C'
+  const healCount = layout === '2n2c' ? 2 : 1
+  if (healCount >= 2) return HEAL_SLOT_LABELS[index] || '辅助奶'
+  return '辅助奶'
+}
+
+export function exportLineupToExcel({ difficulty, teamConfigs, slotsMap, byId, bench = [] }) {
+  const rows = [['队伍', '位置', '角色类型', '归属玩家', '角色称呼', '面板数值', '区间状态']]
+  for (const team of teamConfigs) {
+    const slots = slotsMap[team.id] || []
+    slots.forEach((slot, index) => {
+      const character = slot.characterId ? byId.get(slot.characterId) : null
+      rows.push([
+        team.name,
+        slotPositionLabel(slot, index, team.layout),
+        character ? character.type : slot.role,
+        character ? character.player : '',
+        character ? character.name : '（空位）',
+        character && character.panel !== null ? Number(character.panel) : '',
+        character ? (slot.outOfRange ? '区间外' : '正常') : '空位',
+      ])
+    })
+  }
+
+  const benchRows = [['归属玩家', '角色称呼', '角色类型', '面板数值', '难度类型', '未上场原因']]
+  for (const item of bench) {
+    benchRows.push([
+      item.character.player,
+      item.character.name,
+      item.character.type,
+      item.character.panel === null ? '' : Number(item.character.panel),
+      item.character.difficulty,
+      BENCH_REASON_LABEL[item.reason] || item.reason,
+    ])
+  }
+
+  const wb = XLSX.utils.book_new()
+  const sheet = XLSX.utils.aoa_to_sheet(rows)
+  sheet['!cols'] = [{ wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 18 }, { wch: 12 }, { wch: 10 }]
+  XLSX.utils.book_append_sheet(wb, sheet, '编队')
+
+  if (benchRows.length > 1) {
+    const benchSheet = XLSX.utils.aoa_to_sheet(benchRows)
+    benchSheet['!cols'] = [{ wch: 14 }, { wch: 18 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 14 }]
+    XLSX.utils.book_append_sheet(wb, benchSheet, '未上场')
+  }
+
+  const filename = `DNF打团编队_${difficulty}_${stamp()}.xlsx`
   XLSX.writeFile(wb, filename, { compression: true })
   return filename
 }

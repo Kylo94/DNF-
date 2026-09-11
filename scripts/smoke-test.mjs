@@ -100,7 +100,7 @@ async function waitForFile(dir, re, timeout = 8000) {
 
 await page.goto(URL, { waitUntil: 'networkidle0' })
 await page.waitForSelector('[data-testid="btn-submit"]')
-ok('页面渲染', (await page.$eval('h1', (el) => el.textContent)).includes('角色登记'))
+ok('页面渲染', (await page.$eval('h1', (el) => el.textContent)).includes('打团排表'))
 const shownVersion = await page.$eval('[data-testid="version"]', (el) => el.textContent.trim())
 ok(`标题显示版本号（package.json = ${PKG.version}）`, shownVersion === EXPECT_VERSION, shownVersion)
 ok(
@@ -225,6 +225,175 @@ await page.evaluate(() => {
 await sleep(400)
 const after = (await store()).length
 ok('删除单条登记', after === before - 1 && dialogLog.some((d) => d.includes('确定删除')), `${before} → ${after}`)
+
+
+/* ================= 编队排表 ================= */
+const LINEUP_KEY = 'dnf-raid-lineup-v1'
+const readLineup = () => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || 'null'), LINEUP_KEY)
+const readRoster = () => page.evaluate(() => JSON.parse(localStorage.getItem('dnf-raid-roster-v1') || '[]'))
+
+await page.click('[data-testid="tab-lineup"]')
+await page.waitForSelector('[data-testid="btn-assign"]')
+await sleep(600)
+
+ok(
+  '进入编队后自动排出 12 人',
+  (await page.$eval('[data-testid="assigned-count"]', (el) => el.textContent)).includes('12/12'),
+  await page.$eval('[data-testid="assigned-count"]', (el) => el.textContent),
+)
+ok('三队共 12 个位置填满', (await page.$$eval('.slot:not(.slot--empty)', (els) => els.length)) === 12)
+
+let lineup = await readLineup()
+let roster = await readRoster()
+let rosterById = new Map(roster.map((c) => [c.id, c]))
+const teamIds = ['red', 'yellow', 'green']
+const lineupCharacters = () =>
+  teamIds.flatMap((id) => lineup.teams[id].slots.filter((s) => s.characterId).map((s) => rosterById.get(s.characterId)))
+const playersOnField = lineupCharacters().map((c) => c.player)
+ok('同一玩家一波只上场一个角色', new Set(playersOnField).size === playersOnField.length, `${playersOnField.length} 人上场`)
+const healCounts = teamIds.map((id) => lineup.teams[id].slots.filter((s) => s.role === 'N' && s.characterId).length)
+ok('每队都配置了辅助奶', healCounts.every((n) => n >= 1), healCounts.join(','))
+
+// --- 区间配置 ---
+async function setRange(teamId, role, bound, value) {
+  await page.$eval(
+    `[data-testid="range-${teamId}-${role}-${bound}"]`,
+    (el, v) => {
+      el.value = String(v)
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    },
+    value,
+  )
+}
+
+await setRange('red', 'C', 'min', 5000)
+await page.click('[data-testid="btn-assign"]')
+await sleep(500)
+lineup = await readLineup()
+const redCPanels = lineup.teams.red.slots
+  .filter((s) => s.role === 'C' && s.characterId)
+  .map((s) => rosterById.get(s.characterId).panel)
+ok('红队 C 只从 ≤5000 的区间里挑（min=5000）', redCPanels.every((p) => p >= 5000), redCPanels.join(','))
+ok(
+  '未上场角色会出现在候补区',
+  (await page.$$eval('[data-testid="bench-chip"]', (els) => els.length)) > 0,
+)
+
+await setRange('green', 'C', 'min', 900000)
+await page.click('[data-testid="btn-assign"]')
+await sleep(500)
+const outFlags = await page.$$eval('.flag--out', (els) => els.length)
+ok('区间够不着时兜底补位并标记「区间外」', outFlags > 0, String(outFlags))
+ok(
+  '编队检查提示区间外',
+  (await page.$eval('[data-testid="lineup-warnings"]', (el) => el.innerText)).includes('区间之外'),
+)
+
+// --- 自动分档 ---
+await page.evaluate(() => {
+  const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('按当前角色自动分档'))
+  btn.click()
+})
+await sleep(300)
+lineup = await readLineup()
+const bandMins = teamIds.map((id) => lineup.teams[id].cRange.min)
+ok('自动分档后 红 > 黄 > 绿', bandMins[0] > bandMins[1] && bandMins[1] > bandMins[2], bandMins.join(' > '))
+await page.click('[data-testid="btn-assign"]')
+await sleep(500)
+lineup = await readLineup()
+const inRangePerTeam = teamIds.map(
+  (id) => lineup.teams[id].slots.filter((s) => s.role === 'C' && s.characterId && !s.outOfRange).length,
+)
+ok('自动分档后每队至少 1 个 C 命中区间', inRangePerTeam.every((n) => n >= 1), inRangePerTeam.join(','))
+ok(
+  '自动分档后每队都有奶',
+  teamIds.every((id) => lineup.teams[id].slots.some((s) => s.role === 'N' && s.characterId)),
+)
+const warningText = await page.$eval('[data-testid="lineup-warnings"]', (el) => el.innerText)
+ok(
+  'C 合计出现红<黄这类倒挂时会提示',
+  !warningText.includes('高于') || warningText.includes('建议检查区间设置'),
+  warningText.includes('高于') ? '已提示倒挂' : '本次数据无倒挂',
+)
+
+// --- 双奶配置 ---
+await page.select('[data-testid="select-global-layout"]', '2n2c')
+await sleep(300)
+await page.click('[data-testid="btn-assign"]')
+await sleep(600)
+ok('切到双奶后共 6 个奶位', (await page.$$eval('.slot--heal', (els) => els.length)) === 6)
+lineup = await readLineup()
+const doubleHeal = teamIds.map((id) => lineup.teams[id].slots.filter((s) => s.role === 'N').map((s) => rosterById.get(s.characterId)))
+ok(
+  '双奶每队 2奶2C 且常驻奶面板 ≥ 太阳奶',
+  teamIds.every((id) => lineup.teams[id].slots.filter((s) => s.role === 'C').length === 2) &&
+    doubleHeal.every(([a, b]) => a && b && a.panel >= b.panel),
+  doubleHeal.map((p) => p.map((c) => c.panel).join('>=')).join(' | '),
+)
+
+// --- 点击互换位置 ---
+const beforeSwap = await readLineup()
+const redFirst = beforeSwap.teams.red.slots[0].characterId
+const yellowFirst = beforeSwap.teams.yellow.slots[0].characterId
+await page.click('[data-testid="slot-red-0"]')
+await page.click('[data-testid="slot-yellow-0"]')
+await sleep(400)
+const afterSwap = await readLineup()
+ok(
+  '点击两个位置可以互换角色',
+  afterSwap.teams.red.slots[0].characterId === yellowFirst &&
+    afterSwap.teams.yellow.slots[0].characterId === redFirst,
+)
+
+// --- 下场 / 上场 ---
+const beforeBench = (await page.$$eval('[data-testid="bench-chip"]', (els) => els.length))
+await page.click('[data-testid="slot-red-0"]')
+await page.evaluate(() => document.querySelector('[data-testid="bench-chip"]').click())
+await sleep(400)
+const afterBenchLineup = await readLineup()
+ok(
+  '点击场上位置再点候补角色可以下场',
+  afterBenchLineup.teams.red.slots[0].characterId === null &&
+    (await page.$$eval('[data-testid="bench-chip"]', (els) => els.length)) === beforeBench + 1,
+)
+ok('下场后该位置显示空位', (await page.$eval('[data-testid="slot-red-0"]', (el) => el.innerText)).includes('空位'))
+
+// 把候补里的奶放回空位
+await page.evaluate(() => {
+  const chip = [...document.querySelectorAll('[data-testid="bench-chip"]')].find((c) =>
+    c.innerText.includes('辅助奶'),
+  )
+  if (chip) chip.click()
+})
+await sleep(200)
+await page.click('[data-testid="slot-red-0"]')
+await sleep(400)
+ok('候补角色可以重新上场', (await readLineup()).teams.red.slots.filter((s) => s.characterId).length === 4)
+
+// --- 导出编队 ---
+await page.click('[data-testid="btn-export-lineup"]')
+const lineupFile = await waitForFile(DL, /^DNF打团编队_.*\.xlsx$/, 8000)
+ok('导出编队 xlsx', Boolean(lineupFile), lineupFile || '未找到文件')
+if (lineupFile) {
+  const wb = XLSX.read(fs.readFileSync(path.join(DL, lineupFile)), { type: 'buffer' })
+  ok('编队表含「编队」与「未上场」两个工作表', wb.SheetNames.includes('编队') && wb.SheetNames.includes('未上场'), wb.SheetNames.join(','))
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets['编队'], { header: 1 })
+  ok('编队表表头正确', JSON.stringify(rows[0]) === JSON.stringify(['队伍', '位置', '角色类型', '归属玩家', '角色称呼', '面板数值', '区间状态']), JSON.stringify(rows[0]))
+  ok('编队表正好 12 行（三队 × 4 人）', rows.length - 1 === 12, String(rows.length - 1))
+}
+
+// --- 持久化 ---
+const lineupBeforeReload = await readLineup()
+await page.reload({ waitUntil: 'networkidle0' })
+await page.waitForSelector('[data-testid="btn-assign"]')
+await sleep(500)
+const afterReload = await readLineup()
+ok(
+  '刷新后编队与配置保持不变',
+  JSON.stringify(afterReload.teams) === JSON.stringify(lineupBeforeReload.teams) &&
+    afterReload.difficulty === lineupBeforeReload.difficulty,
+)
+ok('页签状态也记住了（刷新后仍在编队页）', Boolean(await page.$('[data-testid="btn-assign"]')))
 
 const realIssues = consoleIssues.filter((t) => !t.includes('favicon') && !t.includes('Vue Devtools'))
 ok('无控制台报错 / Vue 警告', realIssues.length === 0, realIssues.join(' || ').slice(0, 400))

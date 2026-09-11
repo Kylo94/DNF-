@@ -1,7 +1,7 @@
 {
   "name": "dnf-raid-roster",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "description": "DNF 打团排表工具 - 角色登记（团长用）",
   "scripts": {
@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "build:single": "vite build --mode single --outDir dist-single",
     "test:smoke": "node scripts/smoke-test.mjs",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "test:lineup": "node scripts/lineup-test.mjs"
   },
   "dependencies": {
     "vue": "^3.5.13",
