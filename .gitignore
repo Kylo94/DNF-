@@ -8,3 +8,7 @@ dist-single/
 # 系统文件
 .DS_Store
 *.log
+
+# 浏览器下载到工作目录的导出文件
+DNF打团排表_*.xlsx
+DNF打团角色登记_*.xlsx
